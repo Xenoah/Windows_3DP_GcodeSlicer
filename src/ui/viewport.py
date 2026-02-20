@@ -4,18 +4,24 @@
 Uses QOpenGLWidget with OpenGL 3.3 core profile.
 Renders:
   - Build plate grid
-  - 3D mesh with Phong shading
-  - Sliced layer paths (as colored lines)
+  - 3D mesh with Blinn-Phong shading (solid + transparent modes)
+  - Sliced layer paths (as colored GL_LINES)
+
+View modes:
+  MODEL  - show only the 3D mesh
+  LAYERS - show only sliced layer paths
+  BOTH   - show transparent mesh + layer paths
 """
 
 import math
 import numpy as np
+from enum import Enum
 from typing import List, Optional
 
 from PyQt6.QtWidgets import QSizePolicy
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal
-from PyQt6.QtGui import QSurfaceFormat, QColor
+from PyQt6.QtGui import QSurfaceFormat
 
 try:
     from OpenGL.GL import (
@@ -24,36 +30,43 @@ try:
         glDrawArrays, glDrawElements, glEnable, glDisable, glDepthFunc,
         glClearColor, glClear, glViewport, glLineWidth,
         glUseProgram, glUniform3fv, glUniform1f, glUniformMatrix4fv,
+        glUniformMatrix3fv,
         glGetUniformLocation, glDeleteBuffers, glDeleteVertexArrays,
         glCreateShader, glShaderSource, glCompileShader, glGetShaderiv,
         glGetShaderInfoLog, glCreateProgram, glAttachShader, glLinkProgram,
         glGetProgramiv, glGetProgramInfoLog, glDeleteShader, glDeleteProgram,
-        glUniform3f, glPolygonMode, glFrontFace,
+        glUniform3f, glUniform1i,
         GL_VERTEX_SHADER, GL_FRAGMENT_SHADER, GL_ARRAY_BUFFER,
         GL_ELEMENT_ARRAY_BUFFER, GL_STATIC_DRAW, GL_FLOAT, GL_UNSIGNED_INT,
-        GL_TRIANGLES, GL_LINES, GL_LINE_STRIP, GL_DEPTH_TEST, GL_LESS,
+        GL_TRIANGLES, GL_LINES, GL_DEPTH_TEST, GL_LESS,
         GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT, GL_TRUE, GL_FALSE,
-        GL_COMPILE_STATUS, GL_LINK_STATUS, GL_FRONT_AND_BACK, GL_LINE,
-        GL_FILL, GL_CCW, GL_BLEND, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
-        glBlendFunc, GL_UNSIGNED_BYTE
+        GL_COMPILE_STATUS, GL_LINK_STATUS,
+        GL_BLEND, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+        glBlendFunc, glDepthMask,
+        GL_BACK, glCullFace, GL_CULL_FACE,
     )
     OPENGL_OK = True
 except ImportError as e:
     print(f"[Viewport] OpenGL import error: {e}")
     OPENGL_OK = False
 
-try:
-    from src.core.slicer import SlicedLayer
-    SLICER_OK = True
-except ImportError:
-    SLICER_OK = False
+
+# ---------------------------------------------------------------------------
+# View mode
+# ---------------------------------------------------------------------------
+
+class ViewMode(Enum):
+    MODEL  = "model"    # 3D mesh only
+    LAYERS = "layers"   # sliced layer paths only
+    BOTH   = "both"     # transparent mesh + layer paths
 
 
 # ---------------------------------------------------------------------------
-# Shader source code
+# Shader source
 # ---------------------------------------------------------------------------
 
-MESH_VERT_SHADER = """
+# Mesh: Blinn-Phong shading + optional transparency
+MESH_VERT = """
 #version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
@@ -64,46 +77,52 @@ out vec3 FragPos;
 out vec3 Normal;
 void main() {
     gl_Position = MVP * vec4(aPos, 1.0);
-    FragPos = vec3(model * vec4(aPos, 1.0));
-    Normal = normalMat * aNormal;
+    FragPos     = vec3(model * vec4(aPos, 1.0));
+    Normal      = normalize(normalMat * aNormal);
 }
 """
 
-MESH_FRAG_SHADER = """
+MESH_FRAG = """
 #version 330 core
-in vec3 FragPos;
-in vec3 Normal;
-uniform vec3 lightDir;
-uniform vec3 objectColor;
+in  vec3 FragPos;
+in  vec3 Normal;
+uniform vec3  lightDir;   // direction TO light (world space)
+uniform vec3  viewPos;    // camera position
+uniform vec3  objectColor;
+uniform float alpha;
 out vec4 FragColor;
+
 void main() {
-    float ambient = 0.3;
-    vec3 norm = normalize(Normal);
-    vec3 lightDirN = normalize(-lightDir);
-    float diff = max(dot(norm, lightDirN), 0.0);
-    vec3 lighting = (ambient + diff * 0.7) * objectColor;
-    FragColor = vec4(lighting, 1.0);
+    vec3 norm    = normalize(Normal);
+    vec3 lightN  = normalize(lightDir);
+    vec3 viewN   = normalize(viewPos - FragPos);
+    vec3 halfDir = normalize(lightN + viewN);
+
+    float ambient  = 0.25;
+    float diffuse  = max(dot(norm, lightN), 0.0) * 0.65;
+    float specular = pow(max(dot(norm, halfDir), 0.0), 32.0) * 0.25;
+
+    vec3 color = (ambient + diffuse + specular) * objectColor;
+    FragColor  = vec4(color, alpha);
 }
 """
 
-LINE_VERT_SHADER = """
+# Lines: solid color
+LINE_VERT = """
 #version 330 core
 layout(location = 0) in vec3 aPos;
 uniform mat4 MVP;
-uniform vec3 lineColor;
-out vec3 vColor;
 void main() {
     gl_Position = MVP * vec4(aPos, 1.0);
-    vColor = lineColor;
 }
 """
 
-LINE_FRAG_SHADER = """
+LINE_FRAG = """
 #version 330 core
-in vec3 vColor;
+uniform vec3 lineColor;
 out vec4 FragColor;
 void main() {
-    FragColor = vec4(vColor, 1.0);
+    FragColor = vec4(lineColor, 1.0);
 }
 """
 
@@ -112,8 +131,7 @@ void main() {
 # Math helpers
 # ---------------------------------------------------------------------------
 
-def _perspective(fov_deg, aspect, near, far):
-    """Build a perspective projection matrix."""
+def _perspective(fov_deg: float, aspect: float, near: float, far: float) -> np.ndarray:
     f = 1.0 / math.tan(math.radians(fov_deg) / 2.0)
     nf = 1.0 / (near - far)
     m = np.zeros((4, 4), dtype=np.float32)
@@ -125,71 +143,41 @@ def _perspective(fov_deg, aspect, near, far):
     return m
 
 
-def _look_at(eye, center, up):
-    """Build a look-at view matrix."""
-    eye = np.array(eye, dtype=np.float32)
-    center = np.array(center, dtype=np.float32)
-    up = np.array(up, dtype=np.float32)
-    f = center - eye
-    f /= np.linalg.norm(f)
-    s = np.cross(f, up)
-    s /= np.linalg.norm(s)
+def _look_at(eye: np.ndarray, center: np.ndarray, up: np.ndarray) -> np.ndarray:
+    f = center - eye;  f /= np.linalg.norm(f)
+    s = np.cross(f, up); s /= np.linalg.norm(s)
     u = np.cross(s, f)
     m = np.eye(4, dtype=np.float32)
-    m[0, 0:3] = s
-    m[1, 0:3] = u
-    m[2, 0:3] = -f
-    m[0, 3] = -np.dot(s, eye)
-    m[1, 3] = -np.dot(u, eye)
-    m[2, 3] = np.dot(f, eye)
+    m[0, :3] = s;  m[0, 3] = -np.dot(s, eye)
+    m[1, :3] = u;  m[1, 3] = -np.dot(u, eye)
+    m[2, :3] = -f; m[2, 3] =  np.dot(f, eye)
     return m
 
 
-def _rotation_matrix(azimuth_deg, elevation_deg):
-    """Return a 4x4 rotation matrix from spherical camera angles."""
-    az = math.radians(azimuth_deg)
-    el = math.radians(elevation_deg)
-    # Azimuth around Z, elevation around X
-    ca, sa = math.cos(az), math.sin(az)
-    ce, se = math.cos(el), math.sin(el)
-    # Combined
-    r = np.eye(4, dtype=np.float32)
-    r[0, 0] = ca
-    r[0, 1] = -sa * ce
-    r[0, 2] = sa * se
-    r[1, 0] = sa
-    r[1, 1] = ca * ce
-    r[1, 2] = -ca * se
-    r[2, 0] = 0
-    r[2, 1] = se
-    r[2, 2] = ce
-    return r
-
-
 # ---------------------------------------------------------------------------
-# Shader compilation
+# Shader helpers
 # ---------------------------------------------------------------------------
 
 def _compile_shader(src: str, shader_type) -> int:
-    shader = glCreateShader(shader_type)
-    glShaderSource(shader, src)
-    glCompileShader(shader)
-    if not glGetShaderiv(shader, GL_COMPILE_STATUS):
-        log = glGetShaderInfoLog(shader).decode()
-        glDeleteShader(shader)
+    sh = glCreateShader(shader_type)
+    glShaderSource(sh, src)
+    glCompileShader(sh)
+    if not glGetShaderiv(sh, GL_COMPILE_STATUS):
+        log = glGetShaderInfoLog(sh).decode()
+        glDeleteShader(sh)
         raise RuntimeError(f"Shader compile error:\n{log}")
-    return shader
+    return sh
 
 
 def _link_program(vert_src: str, frag_src: str) -> int:
-    vert = _compile_shader(vert_src, GL_VERTEX_SHADER)
-    frag = _compile_shader(frag_src, GL_FRAGMENT_SHADER)
+    v = _compile_shader(vert_src, GL_VERTEX_SHADER)
+    f = _compile_shader(frag_src, GL_FRAGMENT_SHADER)
     prog = glCreateProgram()
-    glAttachShader(prog, vert)
-    glAttachShader(prog, frag)
+    glAttachShader(prog, v)
+    glAttachShader(prog, f)
     glLinkProgram(prog)
-    glDeleteShader(vert)
-    glDeleteShader(frag)
+    glDeleteShader(v)
+    glDeleteShader(f)
     if not glGetProgramiv(prog, GL_LINK_STATUS):
         log = glGetProgramInfoLog(prog).decode()
         glDeleteProgram(prog)
@@ -202,191 +190,195 @@ def _link_program(vert_src: str, frag_src: str) -> int:
 # ---------------------------------------------------------------------------
 
 class Viewport3D(QOpenGLWidget):
-    """OpenGL 3D viewport for mesh and layer preview rendering."""
+    """OpenGL 3D viewport: mesh preview + layer path preview."""
 
-    layer_changed = pyqtSignal(int)  # emitted when preview layer changes
+    layer_changed = pyqtSignal(int)
+
+    # Layer type display colors  (perimeter, infill, top/bottom, support, brim)
+    _TYPE_COLORS = {
+        'perimeter':  np.array([1.00, 0.55, 0.10], dtype=np.float32),  # orange
+        'infill':     np.array([0.20, 0.80, 0.20], dtype=np.float32),  # green
+        'top_bottom': np.array([0.20, 0.80, 1.00], dtype=np.float32),  # cyan
+        'support':    np.array([0.90, 0.90, 0.10], dtype=np.float32),  # yellow
+        'brim':       np.array([1.00, 0.20, 0.60], dtype=np.float32),  # pink
+    }
 
     def __init__(self, parent=None):
-        # Request OpenGL 3.3 Core profile
         fmt = QSurfaceFormat()
         fmt.setVersion(3, 3)
         fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
         fmt.setDepthBufferSize(24)
-        fmt.setSamples(4)  # MSAA
+        fmt.setSamples(4)
         QSurfaceFormat.setDefaultFormat(fmt)
 
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(400, 300)
+        self.setMouseTracking(True)
 
-        # Camera state
-        self._azimuth = 45.0      # degrees
-        self._elevation = 30.0   # degrees
-        self._distance = 300.0   # mm
-        self._target = np.array([110.0, 110.0, 0.0], dtype=np.float32)  # look-at center
+        # --- Camera ---
+        self._azimuth   = 45.0    # degrees
+        self._elevation = 30.0    # degrees
+        self._distance  = 300.0   # mm
+        self._target    = np.array([110.0, 110.0, 10.0], dtype=np.float32)
 
-        # Mouse state
-        self._last_mouse = QPoint()
+        # --- Mouse ---
+        self._last_mouse   = QPoint()
         self._mouse_button = None
 
-        # Build plate
+        # --- Build plate ---
         self._bed_x = 220.0
         self._bed_y = 220.0
 
-        # Mesh rendering
-        self._mesh_vao = None
-        self._mesh_vbo = None
-        self._mesh_nbo = None
-        self._mesh_ebo = None
+        # --- Mesh GPU data ---
+        self._mesh_vao         = None
+        self._mesh_vbo         = None
+        self._mesh_nbo         = None
+        self._mesh_ebo         = None
         self._mesh_index_count = 0
-        self._mesh_loaded = False
+        self._mesh_loaded      = False
+        self._mesh_color       = np.array([0.30, 0.65, 1.00], dtype=np.float32)
 
-        # Layer path rendering
-        self._layer_vaos = []
-        self._layer_vbos = []
-        self._layer_vertex_counts = []
-        self._layer_colors = []
-        self._layer_z_values = []
-        self._preview_layer = -1   # -1 = show all / no layers
-        self._layers_loaded = False
+        # --- Layer GPU data ---
+        # Each entry: (vao, vbo, vert_count, color_rgb, z_value, type_name)
+        self._layer_draws: list = []
+        self._layer_z_sorted: list = []   # sorted unique z values
+        self._layers_loaded   = False
+        self._preview_layer   = -1        # index into _layer_z_sorted
 
-        # Grid rendering
+        # --- Grid GPU data ---
         self._grid_vao = None
         self._grid_vbo = None
-        self._grid_vertex_count = 0
+        self._grid_vc  = 0
+        self._show_grid = True
 
-        # Shader programs
+        # --- Shader programs ---
         self._mesh_prog = None
         self._line_prog = None
 
-        # GL initialized?
-        self._gl_ready = False
+        # --- State ---
+        self._gl_ready  = False
+        self._view_mode = ViewMode.MODEL
 
-        # Colors
-        self._mesh_color = np.array([0.2, 0.6, 1.0], dtype=np.float32)   # blue-ish
-        self._grid_color = np.array([0.4, 0.4, 0.4], dtype=np.float32)
-        self._bed_color = np.array([0.25, 0.25, 0.25], dtype=np.float32)
-
-        # Layer colors (perimeter, infill, top/bottom, support, brim)
-        self._layer_type_colors = {
-            'perimeter': np.array([1.0, 0.5, 0.0], dtype=np.float32),
-            'infill': np.array([0.0, 0.8, 0.0], dtype=np.float32),
-            'top_bottom': np.array([0.2, 0.8, 1.0], dtype=np.float32),
-            'support': np.array([0.8, 0.8, 0.0], dtype=np.float32),
-            'brim': np.array([1.0, 0.0, 0.5], dtype=np.float32),
-        }
-
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Public API
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+
+    def set_view_mode(self, mode: ViewMode):
+        """Switch between MODEL / LAYERS / BOTH display modes."""
+        self._view_mode = mode
+        self.update()
+
+    def get_view_mode(self) -> ViewMode:
+        return self._view_mode
 
     def load_mesh(self, trimesh_mesh):
-        """Upload mesh geometry to GPU VBOs."""
+        """Upload mesh geometry to the GPU."""
         self.makeCurrent()
         if not self._gl_ready:
+            self.doneCurrent()
             return
-
-        # Clean up existing mesh buffers
         self._cleanup_mesh()
-
         try:
-            verts = np.array(trimesh_mesh.vertices, dtype=np.float32)
-            faces = np.array(trimesh_mesh.faces, dtype=np.uint32)
-            normals = np.array(trimesh_mesh.vertex_normals, dtype=np.float32)
+            verts   = np.asarray(trimesh_mesh.vertices,      dtype=np.float32)
+            normals = np.asarray(trimesh_mesh.vertex_normals, dtype=np.float32)
+            faces   = np.asarray(trimesh_mesh.faces,          dtype=np.uint32)
 
             self._mesh_vao = glGenVertexArrays(1)
             glBindVertexArray(self._mesh_vao)
 
-            # Vertex positions
+            # Positions  (attrib 0)
             self._mesh_vbo = glGenBuffers(1)
             glBindBuffer(GL_ARRAY_BUFFER, self._mesh_vbo)
             glBufferData(GL_ARRAY_BUFFER, verts.nbytes, verts, GL_STATIC_DRAW)
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, None)
             glEnableVertexAttribArray(0)
 
-            # Vertex normals
+            # Normals  (attrib 1)
             self._mesh_nbo = glGenBuffers(1)
             glBindBuffer(GL_ARRAY_BUFFER, self._mesh_nbo)
             glBufferData(GL_ARRAY_BUFFER, normals.nbytes, normals, GL_STATIC_DRAW)
             glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, None)
             glEnableVertexAttribArray(1)
 
-            # Index buffer
+            # Indices (EBO)
             self._mesh_ebo = glGenBuffers(1)
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self._mesh_ebo)
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, faces.nbytes, faces, GL_STATIC_DRAW)
-            self._mesh_index_count = len(faces) * 3
+            self._mesh_index_count = faces.size
 
             glBindVertexArray(0)
             self._mesh_loaded = True
 
-            # Adjust camera to fit mesh
+            # Fit camera to mesh
             bounds = trimesh_mesh.bounds
-            center = (bounds[0] + bounds[1]) / 2
-            self._target = np.array(center, dtype=np.float32)
-            extents = bounds[1] - bounds[0]
-            self._distance = float(np.max(extents) * 2.5)
+            center = ((bounds[0] + bounds[1]) / 2).astype(np.float32)
+            self._target   = center
+            self._distance = float(np.max(bounds[1] - bounds[0]) * 2.2)
 
         except Exception as e:
             print(f"[Viewport] load_mesh error: {e}")
-            self._mesh_loaded = False
-
+            import traceback; traceback.print_exc()
         self.doneCurrent()
         self.update()
 
     def load_layer_paths(self, layers: list):
-        """Upload sliced layer paths to GPU as line VBOs."""
+        """
+        Upload sliced layer paths to GPU.
+        Each layer has .perimeters / .infill / .top_bottom / .support / .brim
+        (lists of numpy Nx2 coordinate arrays).
+        """
         self.makeCurrent()
         if not self._gl_ready:
+            self.doneCurrent()
             return
-
         self._cleanup_layers()
-
         if not layers:
             self.doneCurrent()
             return
-
         try:
+            z_set = set()
             for layer in layers:
                 z = float(layer.z)
-                # Build combined line segments for each type
-                self._upload_layer_paths_for_type(layer.perimeters, z, 'perimeter')
-                self._upload_layer_paths_for_type(layer.infill, z, 'infill')
-                self._upload_layer_paths_for_type(layer.top_bottom, z, 'top_bottom')
-                self._upload_layer_paths_for_type(layer.support, z, 'support')
-                self._upload_layer_paths_for_type(layer.brim, z, 'brim')
+                z_set.add(z)
+                for type_name, paths in [
+                    ('perimeter',  layer.perimeters),
+                    ('infill',     layer.infill),
+                    ('top_bottom', layer.top_bottom),
+                    ('support',    getattr(layer, 'support', [])),
+                    ('brim',       getattr(layer, 'brim',    [])),
+                ]:
+                    self._upload_paths(paths, z, type_name)
 
-            self._layers_loaded = True
-            self._preview_layer = len(layers) - 1
+            self._layer_z_sorted = sorted(z_set)
+            self._layers_loaded  = True
+            self._preview_layer  = len(self._layer_z_sorted) - 1
 
         except Exception as e:
             print(f"[Viewport] load_layer_paths error: {e}")
-
+            import traceback; traceback.print_exc()
         self.doneCurrent()
         self.update()
 
-    def _upload_layer_paths_for_type(self, paths, z: float, path_type: str):
-        """Upload a list of paths (list of np arrays) as a VBO."""
+    def _upload_paths(self, paths, z: float, type_name: str):
+        """Convert a list of Nx2 paths to line-segment GPU data and upload."""
         if not paths:
             return
-
-        all_verts = []
+        segments = []
         for path in paths:
-            if path is None or len(path) < 2:
+            arr = np.asarray(path, dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[1] < 2 or len(arr) < 2:
                 continue
-            arr = np.array(path, dtype=np.float32)
-            if arr.ndim != 2 or arr.shape[1] < 2:
-                continue
-            # Create line strip vertices at height z
-            for i in range(len(arr)):
-                x, y = float(arr[i, 0]), float(arr[i, 1])
-                all_verts.append([x, y, z])
-
-        if not all_verts:
+            # Generate line segments (pairs: p0-p1, p1-p2, ...)
+            for i in range(len(arr) - 1):
+                x0, y0 = float(arr[i,   0]), float(arr[i,   1])
+                x1, y1 = float(arr[i+1, 0]), float(arr[i+1, 1])
+                segments.append([x0, y0, z])
+                segments.append([x1, y1, z])
+        if not segments:
             return
 
-        vdata = np.array(all_verts, dtype=np.float32)
-
+        vdata = np.array(segments, dtype=np.float32)
         vao = glGenVertexArrays(1)
         glBindVertexArray(vao)
         vbo = glGenBuffers(1)
@@ -396,38 +388,36 @@ class Viewport3D(QOpenGLWidget):
         glEnableVertexAttribArray(0)
         glBindVertexArray(0)
 
-        self._layer_vaos.append(vao)
-        self._layer_vbos.append(vbo)
-        self._layer_vertex_counts.append(len(vdata))
-        self._layer_colors.append(self._layer_type_colors.get(path_type, np.array([1.0, 1.0, 1.0])))
-        self._layer_z_values.append(z)
+        color = self._TYPE_COLORS.get(type_name, np.array([1.0, 1.0, 1.0], dtype=np.float32))
+        self._layer_draws.append((vao, vbo, len(vdata), color.copy(), z, type_name))
 
     def set_layer_preview(self, layer_index: int):
-        """Show layers up to (and including) layer_index."""
+        """Show layers up to and including layer_index (0-based)."""
         self._preview_layer = layer_index
         self.update()
 
     def reset_camera(self):
-        """Reset camera to default position."""
-        self._azimuth = 45.0
+        self._azimuth   = 45.0
         self._elevation = 30.0
-        self._distance = 300.0
-        self._target = np.array([self._bed_x / 2, self._bed_y / 2, 0.0], dtype=np.float32)
+        self._distance  = max(self._bed_x, self._bed_y) * 2.0
+        self._target    = np.array([self._bed_x/2, self._bed_y/2, 10.0], dtype=np.float32)
         self.update()
 
     def set_bed_size(self, x: float, y: float):
-        """Update the build plate size."""
         self._bed_x = float(x)
         self._bed_y = float(y)
-        self._target = np.array([x / 2, y / 2, 0.0], dtype=np.float32)
+        self._target = np.array([x/2, y/2, 10.0], dtype=np.float32)
         if self._gl_ready:
             self.makeCurrent()
             self._build_grid()
             self.doneCurrent()
         self.update()
 
+    def set_show_grid(self, visible: bool):
+        self._show_grid = visible
+        self.update()
+
     def clear_layers(self):
-        """Remove all layer path data."""
         if self._gl_ready:
             self.makeCurrent()
             self._cleanup_layers()
@@ -435,182 +425,189 @@ class Viewport3D(QOpenGLWidget):
         self.update()
 
     def clear_mesh(self):
-        """Remove mesh data."""
         if self._gl_ready:
             self.makeCurrent()
             self._cleanup_mesh()
             self.doneCurrent()
         self.update()
 
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # OpenGL lifecycle
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     def initializeGL(self):
         if not OPENGL_OK:
-            print("[Viewport] OpenGL not available")
             return
         try:
-            glClearColor(0.12, 0.12, 0.12, 1.0)
+            glClearColor(0.10, 0.10, 0.12, 1.0)
             glEnable(GL_DEPTH_TEST)
             glDepthFunc(GL_LESS)
             glEnable(GL_BLEND)
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            glEnable(GL_CULL_FACE)
+            glCullFace(GL_BACK)
 
-            # Compile shaders
-            self._mesh_prog = _link_program(MESH_VERT_SHADER, MESH_FRAG_SHADER)
-            self._line_prog = _link_program(LINE_VERT_SHADER, LINE_FRAG_SHADER)
-
-            # Build grid
+            self._mesh_prog = _link_program(MESH_VERT, MESH_FRAG)
+            self._line_prog = _link_program(LINE_VERT, LINE_FRAG)
             self._build_grid()
-
             self._gl_ready = True
         except Exception as e:
             print(f"[Viewport] initializeGL error: {e}")
-            import traceback
-            traceback.print_exc()
+            import traceback; traceback.print_exc()
 
     def resizeGL(self, w: int, h: int):
-        if h == 0:
-            h = 1
-        glViewport(0, 0, w, h)
+        glViewport(0, 0, w, max(h, 1))
 
     def paintGL(self):
         if not OPENGL_OK or not self._gl_ready:
             return
-
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
         w, h = self.width(), self.height()
         if h == 0:
             return
 
-        mvp, model_mat, normal_mat = self._compute_matrices(w, h)
+        mvp, model_mat, normal_mat, eye_pos = self._compute_matrices(w, h)
 
-        # Draw grid
-        self._draw_grid(mvp)
+        # Grid (always)
+        if self._show_grid:
+            self._draw_grid(mvp)
 
-        # Draw mesh (if no layers loaded, or mesh is visible)
-        if self._mesh_loaded and not self._layers_loaded:
-            self._draw_mesh(mvp, model_mat, normal_mat)
-        elif self._mesh_loaded and self._layers_loaded:
-            # Show mesh faintly in layer mode
-            self._draw_mesh(mvp, model_mat, normal_mat, alpha_mode=True)
+        mode = self._view_mode
 
-        # Draw layer paths
-        if self._layers_loaded:
-            self._draw_layers(mvp)
+        if mode == ViewMode.MODEL:
+            if self._mesh_loaded:
+                self._draw_mesh(mvp, model_mat, normal_mat, eye_pos, alpha=1.0)
 
-    # ------------------------------------------------------------------
+        elif mode == ViewMode.LAYERS:
+            if self._layers_loaded:
+                self._draw_layers(mvp)
+
+        elif mode == ViewMode.BOTH:
+            # Transparent mesh first (write to depth but semi-transparent)
+            if self._mesh_loaded:
+                self._draw_mesh(mvp, model_mat, normal_mat, eye_pos, alpha=0.30)
+            # Opaque layer lines on top
+            if self._layers_loaded:
+                self._draw_layers(mvp)
+
+    # -----------------------------------------------------------------------
     # Rendering helpers
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     def _compute_matrices(self, w: int, h: int):
-        """Compute MVP, model and normal matrices from camera state."""
-        # Camera position in spherical coordinates
         az = math.radians(self._azimuth)
         el = math.radians(self._elevation)
 
-        eye_x = self._target[0] + self._distance * math.cos(el) * math.sin(az)
-        eye_y = self._target[1] + self._distance * math.cos(el) * math.cos(az)
-        eye_z = self._target[2] + self._distance * math.sin(el)
+        eye = np.array([
+            self._target[0] + self._distance * math.cos(el) * math.sin(az),
+            self._target[1] + self._distance * math.cos(el) * math.cos(az),
+            self._target[2] + self._distance * math.sin(el),
+        ], dtype=np.float32)
 
-        eye = np.array([eye_x, eye_y, eye_z], dtype=np.float32)
-        up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        view   = _look_at(eye, self._target, np.array([0, 0, 1], dtype=np.float32))
+        proj   = _perspective(45.0, w / h, 0.1, 10000.0)
+        model  = np.eye(4, dtype=np.float32)
+        mvp    = proj @ view @ model
 
-        view = _look_at(eye, self._target, up)
-        proj = _perspective(45.0, w / h, 0.1, 10000.0)
-        model = np.eye(4, dtype=np.float32)
-
-        mvp = proj @ view @ model
-
-        # Normal matrix = transpose(inverse(model)) upper-left 3x3
+        # Normal matrix: inverse-transpose of upper-left 3x3 of model
         normal_mat = np.linalg.inv(model[:3, :3]).T.astype(np.float32)
 
-        return mvp, model, normal_mat
+        return mvp, model, normal_mat, eye
 
-    def _draw_mesh(self, mvp, model_mat, normal_mat, alpha_mode=False):
+    def _draw_mesh(self, mvp, model_mat, normal_mat, eye_pos, alpha: float = 1.0):
         if not self._mesh_loaded or self._mesh_vao is None:
             return
         try:
             glUseProgram(self._mesh_prog)
 
-            loc_mvp = glGetUniformLocation(self._mesh_prog, "MVP")
-            loc_model = glGetUniformLocation(self._mesh_prog, "model")
-            loc_nm = glGetUniformLocation(self._mesh_prog, "normalMat")
-            loc_light = glGetUniformLocation(self._mesh_prog, "lightDir")
-            loc_color = glGetUniformLocation(self._mesh_prog, "objectColor")
+            glUniformMatrix4fv(glGetUniformLocation(self._mesh_prog, "MVP"),
+                               1, GL_TRUE, mvp)
+            glUniformMatrix4fv(glGetUniformLocation(self._mesh_prog, "model"),
+                               1, GL_TRUE, model_mat)
+            # *** FIX: normalMat is mat3 → use glUniformMatrix3fv ***
+            glUniformMatrix3fv(glGetUniformLocation(self._mesh_prog, "normalMat"),
+                               1, GL_TRUE, normal_mat)
 
-            glUniformMatrix4fv(loc_mvp, 1, GL_TRUE, mvp)
-            glUniformMatrix4fv(loc_model, 1, GL_TRUE, model_mat)
-            glUniformMatrix4fv(loc_nm, 1, GL_TRUE, normal_mat)
+            # Light direction (world space, toward the light)
+            light = np.array([1.0, 0.8, 2.0], dtype=np.float32)
+            light /= np.linalg.norm(light)
+            glUniform3fv(glGetUniformLocation(self._mesh_prog, "lightDir"),  1, light)
+            glUniform3fv(glGetUniformLocation(self._mesh_prog, "viewPos"),   1, eye_pos)
+            glUniform3fv(glGetUniformLocation(self._mesh_prog, "objectColor"), 1, self._mesh_color)
+            glUniform1f(glGetUniformLocation(self._mesh_prog, "alpha"), alpha)
 
-            light_dir = np.array([-1.0, -1.0, -2.0], dtype=np.float32)
-            glUniform3fv(loc_light, 1, light_dir)
-
-            color = self._mesh_color.copy()
-            glUniform3fv(loc_color, 1, color)
+            if alpha < 1.0:
+                glDisable(GL_CULL_FACE)  # show both sides when transparent
+                glDepthMask(GL_FALSE)
+            else:
+                glEnable(GL_CULL_FACE)
+                glDepthMask(GL_TRUE)
 
             glBindVertexArray(self._mesh_vao)
             glDrawElements(GL_TRIANGLES, self._mesh_index_count, GL_UNSIGNED_INT, None)
             glBindVertexArray(0)
+
+            # Restore state
+            glDepthMask(GL_TRUE)
+            glEnable(GL_CULL_FACE)
+
         except Exception as e:
-            pass  # Silently skip render errors
+            print(f"[Viewport] _draw_mesh error: {e}")
 
     def _draw_grid(self, mvp):
         if self._grid_vao is None:
             return
         try:
             glUseProgram(self._line_prog)
-            loc_mvp = glGetUniformLocation(self._line_prog, "MVP")
-            loc_color = glGetUniformLocation(self._line_prog, "lineColor")
+            glUniformMatrix4fv(glGetUniformLocation(self._line_prog, "MVP"), 1, GL_TRUE, mvp)
 
-            glUniformMatrix4fv(loc_mvp, 1, GL_TRUE, mvp)
-            glUniform3fv(loc_color, 1, self._grid_color)
-
+            # Main grid (dark)
+            glUniform3fv(glGetUniformLocation(self._line_prog, "lineColor"), 1,
+                         np.array([0.30, 0.30, 0.30], dtype=np.float32))
             glBindVertexArray(self._grid_vao)
-            glDrawArrays(GL_LINES, 0, self._grid_vertex_count)
+            glDrawArrays(GL_LINES, 0, self._grid_vc)
             glBindVertexArray(0)
         except Exception as e:
-            pass
+            print(f"[Viewport] _draw_grid error: {e}")
 
     def _draw_layers(self, mvp):
-        if not self._layer_vaos:
+        if not self._layer_draws:
             return
         try:
             glUseProgram(self._line_prog)
-            loc_mvp = glGetUniformLocation(self._line_prog, "MVP")
+            glUniformMatrix4fv(glGetUniformLocation(self._line_prog, "MVP"), 1, GL_TRUE, mvp)
             loc_color = glGetUniformLocation(self._line_prog, "lineColor")
-            glUniformMatrix4fv(loc_mvp, 1, GL_TRUE, mvp)
 
-            max_z = -1e10
-            if self._preview_layer >= 0 and self._layer_z_values:
-                # Find the max z to show
-                unique_zs = sorted(set(self._layer_z_values))
-                if self._preview_layer < len(unique_zs):
-                    max_z = unique_zs[self._preview_layer]
-                else:
-                    max_z = unique_zs[-1]
+            # Determine max z to display
+            max_z = float('inf')
+            if self._preview_layer >= 0 and self._layer_z_sorted:
+                idx = min(self._preview_layer, len(self._layer_z_sorted) - 1)
+                max_z = self._layer_z_sorted[idx]
 
-            for i, (vao, count, color, z) in enumerate(
-                zip(self._layer_vaos, self._layer_vertex_counts,
-                    self._layer_colors, self._layer_z_values)
-            ):
-                if self._preview_layer >= 0 and z > max_z + 1e-4:
+            # Current layer highlight z
+            cur_z = self._layer_z_sorted[idx] if self._layer_z_sorted else None
+
+            glLineWidth(1.5)
+            for vao, vbo, vc, color, z, type_name in self._layer_draws:
+                if z > max_z + 1e-4:
                     continue
-                glUniform3fv(loc_color, 1, color)
+                # Highlight the current (top-most visible) layer
+                if cur_z is not None and abs(z - cur_z) < 1e-4:
+                    c = np.minimum(color * 1.5, 1.0)
+                else:
+                    c = color * 0.7  # slightly dimmer for lower layers
+                glUniform3fv(loc_color, 1, c.astype(np.float32))
                 glBindVertexArray(vao)
-                glDrawArrays(GL_LINE_STRIP, 0, count)
+                glDrawArrays(GL_LINES, 0, vc)
                 glBindVertexArray(0)
+            glLineWidth(1.0)
         except Exception as e:
-            pass
+            print(f"[Viewport] _draw_layers error: {e}")
 
     def _build_grid(self):
-        """Build grid lines for the build plate."""
+        """Build plate grid geometry."""
         if not self._gl_ready:
             return
-
-        # Cleanup old grid
         if self._grid_vao is not None:
             try:
                 glDeleteVertexArrays(1, [self._grid_vao])
@@ -619,53 +616,47 @@ class Viewport3D(QOpenGLWidget):
                 pass
 
         try:
-            grid_lines = []
-            step = 10.0  # grid spacing in mm
+            verts = []
             bx, by = self._bed_x, self._bed_y
+            step = 10.0
 
-            # Lines along X
-            y = 0.0
-            while y <= by + 1e-4:
-                grid_lines += [[0.0, y, 0.0], [bx, y, 0.0]]
+            # Interior grid lines
+            y = step
+            while y < by - 1e-4:
+                verts += [[0.0, y, 0.0], [bx, y, 0.0]]
                 y += step
-
-            # Lines along Y
-            x = 0.0
-            while x <= bx + 1e-4:
-                grid_lines += [[x, 0.0, 0.0], [x, by, 0.0]]
+            x = step
+            while x < bx - 1e-4:
+                verts += [[x, 0.0, 0.0], [x, by, 0.0]]
                 x += step
 
-            # Border (thicker, use same color for now)
-            border = [
-                [0, 0, 0], [bx, 0, 0],
-                [bx, 0, 0], [bx, by, 0],
-                [bx, by, 0], [0, by, 0],
-                [0, by, 0], [0, 0, 0],
+            # Axis lines (slightly brighter, added separately via same VBO)
+            verts += [
+                [0, 0, 0], [bx, 0, 0],   # front edge
+                [0, 0, 0], [0, by, 0],   # left edge
+                [bx, 0, 0], [bx, by, 0], # right edge
+                [0, by, 0], [bx, by, 0], # back edge
             ]
-            grid_lines += border
 
-            vdata = np.array(grid_lines, dtype=np.float32)
-
+            vdata = np.array(verts, dtype=np.float32)
             self._grid_vao = glGenVertexArrays(1)
             glBindVertexArray(self._grid_vao)
-
             self._grid_vbo = glGenBuffers(1)
             glBindBuffer(GL_ARRAY_BUFFER, self._grid_vbo)
             glBufferData(GL_ARRAY_BUFFER, vdata.nbytes, vdata, GL_STATIC_DRAW)
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, None)
             glEnableVertexAttribArray(0)
             glBindVertexArray(0)
-
-            self._grid_vertex_count = len(vdata)
+            self._grid_vc = len(vdata)
         except Exception as e:
             print(f"[Viewport] _build_grid error: {e}")
 
-    # ------------------------------------------------------------------
-    # Mouse interaction
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Mouse / keyboard
+    # -----------------------------------------------------------------------
 
     def mousePressEvent(self, event):
-        self._last_mouse = event.pos()
+        self._last_mouse   = event.pos()
         self._mouse_button = event.button()
 
     def mouseMoveEvent(self, event):
@@ -676,29 +667,19 @@ class Viewport3D(QOpenGLWidget):
         self._last_mouse = event.pos()
 
         if self._mouse_button == Qt.MouseButton.LeftButton:
-            # Orbit
-            self._azimuth += dx * 0.5
-            self._elevation = max(-89.0, min(89.0, self._elevation - dy * 0.5))
+            self._azimuth   += dx * 0.5
+            self._elevation  = max(-89.0, min(89.0, self._elevation - dy * 0.5))
             self.update()
 
         elif self._mouse_button == Qt.MouseButton.MiddleButton:
-            # Pan
             az = math.radians(self._azimuth)
             el = math.radians(self._elevation)
-
-            # Right vector
-            right_x = math.cos(az)
-            right_y = -math.sin(az)
-
-            # Up vector (in world space, projected)
-            up_x = -math.sin(el) * math.sin(az)
-            up_y = -math.sin(el) * math.cos(az)
-            up_z = math.cos(el)
-
-            scale = self._distance * 0.001
-            self._target[0] -= (right_x * dx + up_x * dy) * scale
-            self._target[1] -= (right_y * dx + up_y * dy) * scale
-            self._target[2] -= up_z * dy * scale
+            right = np.array([ math.cos(az), -math.sin(az), 0.0], dtype=np.float32)
+            up    = np.array([-math.sin(el)*math.sin(az),
+                               -math.sin(el)*math.cos(az),
+                                math.cos(el)], dtype=np.float32)
+            scale = self._distance * 0.0012
+            self._target -= (right * dx - up * dy) * scale
             self.update()
 
     def mouseReleaseEvent(self, event):
@@ -706,60 +687,43 @@ class Viewport3D(QOpenGLWidget):
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
-        factor = 0.9 if delta > 0 else 1.1
-        self._distance = max(10.0, min(5000.0, self._distance * factor))
+        factor = 0.88 if delta > 0 else 1.14
+        self._distance = max(5.0, min(8000.0, self._distance * factor))
         self.update()
 
-    # ------------------------------------------------------------------
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_R:
+            self.reset_camera()
+        super().keyPressEvent(event)
+
+    # -----------------------------------------------------------------------
     # Cleanup
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     def _cleanup_mesh(self):
-        if self._mesh_vao is not None:
-            try:
-                glDeleteVertexArrays(1, [self._mesh_vao])
-            except Exception:
-                pass
-        if self._mesh_vbo is not None:
-            try:
-                glDeleteBuffers(1, [self._mesh_vbo])
-            except Exception:
-                pass
-        if self._mesh_nbo is not None:
-            try:
-                glDeleteBuffers(1, [self._mesh_nbo])
-            except Exception:
-                pass
-        if self._mesh_ebo is not None:
-            try:
-                glDeleteBuffers(1, [self._mesh_ebo])
-            except Exception:
-                pass
-        self._mesh_vao = None
-        self._mesh_vbo = None
-        self._mesh_nbo = None
-        self._mesh_ebo = None
+        for buf in [self._mesh_vao, self._mesh_vbo, self._mesh_nbo, self._mesh_ebo]:
+            if buf is not None:
+                try:
+                    if buf == self._mesh_vao:
+                        glDeleteVertexArrays(1, [buf])
+                    else:
+                        glDeleteBuffers(1, [buf])
+                except Exception:
+                    pass
+        self._mesh_vao = self._mesh_vbo = self._mesh_nbo = self._mesh_ebo = None
         self._mesh_index_count = 0
         self._mesh_loaded = False
 
     def _cleanup_layers(self):
-        for vao in self._layer_vaos:
-            try:
-                glDeleteVertexArrays(1, [vao])
-            except Exception:
-                pass
-        for vbo in self._layer_vbos:
-            try:
-                glDeleteBuffers(1, [vbo])
-            except Exception:
-                pass
-        self._layer_vaos = []
-        self._layer_vbos = []
-        self._layer_vertex_counts = []
-        self._layer_colors = []
-        self._layer_z_values = []
-        self._layers_loaded = False
-        self._preview_layer = -1
+        for vao, vbo, *_ in self._layer_draws:
+            try: glDeleteVertexArrays(1, [vao])
+            except Exception: pass
+            try: glDeleteBuffers(1, [vbo])
+            except Exception: pass
+        self._layer_draws      = []
+        self._layer_z_sorted   = []
+        self._layers_loaded    = False
+        self._preview_layer    = -1
 
     def closeEvent(self, event):
         self.makeCurrent()

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QListWidget, QListWidgetItem, QPushButton,
     QFileDialog, QStatusBar, QProgressBar, QLabel,
     QToolBar, QMenuBar, QMenu, QMessageBox, QGroupBox,
-    QSizePolicy, QFrame
+    QSizePolicy, QFrame, QButtonGroup
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QObject, QSize
@@ -24,7 +24,7 @@ from src.core.mesh import Mesh
 from src.core.slicer import Slicer, SliceSettings
 from src.core.gcode import GCodeGenerator, load_printer_profiles
 from src.loaders.loader import load_file
-from src.ui.viewport import Viewport3D
+from src.ui.viewport import Viewport3D, ViewMode
 from src.ui.settings_panel import SettingsPanel
 from src.ui.layer_slider import LayerSlider
 
@@ -225,28 +225,72 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         # Open
-        tb_open = QAction("Open", self)
+        tb_open = QAction("📂 Open", self)
         tb_open.triggered.connect(self._on_open_file)
         toolbar.addAction(tb_open)
 
         toolbar.addSeparator()
 
         # Slice
-        self.tb_slice = QAction("Slice", self)
+        self.tb_slice = QAction("⚙ Slice", self)
         self.tb_slice.setEnabled(False)
         self.tb_slice.triggered.connect(self._on_slice)
         toolbar.addAction(self.tb_slice)
 
         # Export G-code
-        self.tb_export = QAction("Export G-code", self)
+        self.tb_export = QAction("💾 Export G-code", self)
         self.tb_export.setEnabled(False)
         self.tb_export.triggered.connect(self._on_export_gcode)
         toolbar.addAction(self.tb_export)
 
         toolbar.addSeparator()
 
+        # ---- View mode toggle buttons ----
+        toolbar.addWidget(QLabel(" View: "))
+
+        self._view_btn_model = QPushButton("3D Model")
+        self._view_btn_model.setCheckable(True)
+        self._view_btn_model.setChecked(True)
+        self._view_btn_model.setToolTip("Show 3D mesh only")
+        self._view_btn_model.setFixedHeight(26)
+        self._view_btn_model.setStyleSheet(
+            "QPushButton{padding:2px 8px;}"
+            "QPushButton:checked{background:#3a7bd5;color:white;border-radius:3px;}"
+        )
+        toolbar.addWidget(self._view_btn_model)
+
+        self._view_btn_layers = QPushButton("Layer Preview")
+        self._view_btn_layers.setCheckable(True)
+        self._view_btn_layers.setToolTip("Show sliced layer paths only")
+        self._view_btn_layers.setFixedHeight(26)
+        self._view_btn_layers.setStyleSheet(
+            "QPushButton{padding:2px 8px;}"
+            "QPushButton:checked{background:#3a7bd5;color:white;border-radius:3px;}"
+        )
+        toolbar.addWidget(self._view_btn_layers)
+
+        self._view_btn_both = QPushButton("Both")
+        self._view_btn_both.setCheckable(True)
+        self._view_btn_both.setToolTip("Show transparent mesh + layer paths")
+        self._view_btn_both.setFixedHeight(26)
+        self._view_btn_both.setStyleSheet(
+            "QPushButton{padding:2px 8px;}"
+            "QPushButton:checked{background:#3a7bd5;color:white;border-radius:3px;}"
+        )
+        toolbar.addWidget(self._view_btn_both)
+
+        # Exclusive group
+        self._view_group = QButtonGroup(self)
+        self._view_group.addButton(self._view_btn_model,  0)
+        self._view_group.addButton(self._view_btn_layers, 1)
+        self._view_group.addButton(self._view_btn_both,   2)
+        self._view_group.setExclusive(True)
+        self._view_group.idClicked.connect(self._on_view_mode_changed)
+
+        toolbar.addSeparator()
+
         # Reset camera
-        tb_reset_cam = QAction("Reset Camera", self)
+        tb_reset_cam = QAction("⟳ Camera", self)
         tb_reset_cam.triggered.connect(self.viewport.reset_camera)
         toolbar.addAction(tb_reset_cam)
 
@@ -463,6 +507,10 @@ class MainWindow(QMainWindow):
         self.viewport.load_layer_paths(layers)
         self.viewport.set_layer_preview(len(layers) - 1)
 
+        # Auto-switch to "Both" view after slicing
+        self._view_btn_both.setChecked(True)
+        self.viewport.set_view_mode(ViewMode.BOTH)
+
         # Update status
         self.layers_label.setText(f"Layers: {len(layers)}")
         mins = int(print_time_s // 60)
@@ -521,6 +569,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Export Error",
                                  f"Failed to export G-code:\n\n{str(e)}\n\n{traceback.format_exc()}")
+
+    # ------------------------------------------------------------------
+    # View mode
+    # ------------------------------------------------------------------
+
+    def _on_view_mode_changed(self, btn_id: int):
+        mode_map = {0: ViewMode.MODEL, 1: ViewMode.LAYERS, 2: ViewMode.BOTH}
+        self.viewport.set_view_mode(mode_map.get(btn_id, ViewMode.MODEL))
 
     # ------------------------------------------------------------------
     # Layer preview
