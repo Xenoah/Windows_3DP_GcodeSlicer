@@ -11,8 +11,29 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QPalette, QColor
+from PyQt6.QtGui import QPalette, QColor, QSurfaceFormat
 from PyQt6.QtCore import Qt
+
+
+def _set_opengl_format():
+    """
+    Set OpenGL surface format BEFORE QApplication is created.
+    Qt requires this to take effect for QOpenGLWidget.
+    Try OpenGL 3.3 Core; if the driver doesn't support it the widget
+    will fall back gracefully.
+    """
+    fmt = QSurfaceFormat()
+    fmt.setVersion(3, 3)
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+    fmt.setDepthBufferSize(24)
+    fmt.setStencilBufferSize(8)
+    fmt.setSamples(4)           # MSAA x4
+    fmt.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
+    QSurfaceFormat.setDefaultFormat(fmt)
+
+
+# *** MUST be called before QApplication ***
+_set_opengl_format()
 
 
 def apply_dark_theme(app: QApplication):

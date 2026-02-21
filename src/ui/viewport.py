@@ -204,13 +204,8 @@ class Viewport3D(QOpenGLWidget):
     }
 
     def __init__(self, parent=None):
-        fmt = QSurfaceFormat()
-        fmt.setVersion(3, 3)
-        fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
-        fmt.setDepthBufferSize(24)
-        fmt.setSamples(4)
-        QSurfaceFormat.setDefaultFormat(fmt)
-
+        # NOTE: QSurfaceFormat.setDefaultFormat() is called in main.py
+        # BEFORE QApplication, which is required for it to take effect.
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(400, 300)
@@ -238,6 +233,7 @@ class Viewport3D(QOpenGLWidget):
         self._mesh_index_count = 0
         self._mesh_loaded      = False
         self._mesh_color       = np.array([0.30, 0.65, 1.00], dtype=np.float32)
+        self._pending_trimesh  = None   # stored for deferred GPU upload
 
         # --- Layer GPU data ---
         # Each entry: (vao, vbo, vert_count, color_rgb, z_value, type_name)
@@ -273,35 +269,53 @@ class Viewport3D(QOpenGLWidget):
         return self._view_mode
 
     def load_mesh(self, trimesh_mesh):
-        """Upload mesh geometry to the GPU."""
-        self.makeCurrent()
-        if not self._gl_ready:
+        """
+        Upload mesh geometry to the GPU.
+        Safe to call at any time – deferred until GL is initialized.
+        """
+        # Fit camera regardless of GL state
+        try:
+            bounds = trimesh_mesh.bounds
+            center = ((bounds[0] + bounds[1]) / 2).astype(np.float32)
+            self._target   = center
+            self._distance = float(np.max(bounds[1] - bounds[0]) * 2.2)
+        except Exception:
+            pass
+
+        self._pending_trimesh = trimesh_mesh
+        if self._gl_ready:
+            self.makeCurrent()
+            self._flush_pending_mesh()
             self.doneCurrent()
+        self.update()
+
+    def _flush_pending_mesh(self):
+        """Upload _pending_trimesh to GPU. Must be called with GL context current."""
+        if self._pending_trimesh is None:
             return
+        tri = self._pending_trimesh
+        self._pending_trimesh = None
         self._cleanup_mesh()
         try:
-            verts   = np.asarray(trimesh_mesh.vertices,      dtype=np.float32)
-            normals = np.asarray(trimesh_mesh.vertex_normals, dtype=np.float32)
-            faces   = np.asarray(trimesh_mesh.faces,          dtype=np.uint32)
+            verts   = np.asarray(tri.vertices,      dtype=np.float32)
+            normals = np.asarray(tri.vertex_normals, dtype=np.float32)
+            faces   = np.asarray(tri.faces,          dtype=np.uint32)
 
             self._mesh_vao = glGenVertexArrays(1)
             glBindVertexArray(self._mesh_vao)
 
-            # Positions  (attrib 0)
             self._mesh_vbo = glGenBuffers(1)
             glBindBuffer(GL_ARRAY_BUFFER, self._mesh_vbo)
             glBufferData(GL_ARRAY_BUFFER, verts.nbytes, verts, GL_STATIC_DRAW)
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, None)
             glEnableVertexAttribArray(0)
 
-            # Normals  (attrib 1)
             self._mesh_nbo = glGenBuffers(1)
             glBindBuffer(GL_ARRAY_BUFFER, self._mesh_nbo)
             glBufferData(GL_ARRAY_BUFFER, normals.nbytes, normals, GL_STATIC_DRAW)
             glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, None)
             glEnableVertexAttribArray(1)
 
-            # Indices (EBO)
             self._mesh_ebo = glGenBuffers(1)
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self._mesh_ebo)
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, faces.nbytes, faces, GL_STATIC_DRAW)
@@ -309,18 +323,11 @@ class Viewport3D(QOpenGLWidget):
 
             glBindVertexArray(0)
             self._mesh_loaded = True
-
-            # Fit camera to mesh
-            bounds = trimesh_mesh.bounds
-            center = ((bounds[0] + bounds[1]) / 2).astype(np.float32)
-            self._target   = center
-            self._distance = float(np.max(bounds[1] - bounds[0]) * 2.2)
+            print(f"[Viewport] mesh uploaded: {len(verts)} verts, {len(faces)} faces")
 
         except Exception as e:
-            print(f"[Viewport] load_mesh error: {e}")
+            print(f"[Viewport] _flush_pending_mesh error: {e}")
             import traceback; traceback.print_exc()
-        self.doneCurrent()
-        self.update()
 
     def load_layer_paths(self, layers: list):
         """
@@ -461,6 +468,9 @@ class Viewport3D(QOpenGLWidget):
     def paintGL(self):
         if not OPENGL_OK or not self._gl_ready:
             return
+        # Upload any pending mesh (deferred from before GL was ready)
+        if self._pending_trimesh is not None:
+            self._flush_pending_mesh()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         w, h = self.width(), self.height()
         if h == 0:
@@ -478,15 +488,12 @@ class Viewport3D(QOpenGLWidget):
             if self._mesh_loaded:
                 self._draw_mesh(mvp, model_mat, normal_mat, eye_pos, alpha=1.0)
 
-        elif mode == ViewMode.LAYERS:
-            if self._layers_loaded:
-                self._draw_layers(mvp)
-
-        elif mode == ViewMode.BOTH:
-            # Transparent mesh first (write to depth but semi-transparent)
+        elif mode in (ViewMode.LAYERS, ViewMode.BOTH):
+            # Always show mesh as ghost background so model is never lost from view
             if self._mesh_loaded:
-                self._draw_mesh(mvp, model_mat, normal_mat, eye_pos, alpha=0.30)
-            # Opaque layer lines on top
+                alpha = 0.30 if self._layers_loaded else 0.85
+                self._draw_mesh(mvp, model_mat, normal_mat, eye_pos, alpha=alpha)
+            # Layer paths on top
             if self._layers_loaded:
                 self._draw_layers(mvp)
 

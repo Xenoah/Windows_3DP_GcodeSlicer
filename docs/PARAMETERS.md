@@ -1,6 +1,6 @@
 # 3D Slicer Pro – パラメーター仕様書
 
-> 更新: 2026-02-21
+> 更新: 2026-02-21 (Rev 2 – プリセットシステム追加、OpenGL修正)
 
 ---
 
@@ -8,6 +8,8 @@
 
 | カテゴリ | 実装済み | 未実装 |
 |----------|----------|--------|
+| OpenGL 3Dプレビュー | ✅ QSurfaceFormat順序修正済み | — |
+| プリセット保存/読み込み | ✅ ビルトイン9種 + ユーザー保存 | — |
 | レイヤー / 押出幅 | ✅ | — |
 | ウォール | ✅ | seam実処理 (seam_position はUI反映済み、アルゴリズム未接続) |
 | インフィル | ✅ | infill_angle は UI/設定のみ (slicer側回転は未実装) |
@@ -124,6 +126,40 @@
 リトラクション: 6.5 mm @ 25 mm/s
 温度 (PLA):     200°C (第1層 205°C)
 ファン:         第3レイヤーから 100%
+```
+
+---
+
+## プリセットシステム
+
+### ビルトインプリセット（読み取り専用）
+| プリセット名 | 用途 |
+|-------------|------|
+| Draft (0.3mm, 10%, Fast) | 速度優先、品質低め |
+| Normal Quality (0.2mm, 20%) | 汎用標準設定 |
+| High Quality (0.15mm, 30%) | 品質優先、低速 |
+| Strong (0.2mm, 50%, Honeycomb) | 強度優先、ハニカムインフィル |
+| With Support (Normal) | サポートあり標準設定 |
+| K9 – Draft | Easythreed K9専用・速度優先 |
+| K9 – Normal | Easythreed K9専用・標準 |
+| K9 – Quality | Easythreed K9専用・品質優先 |
+| PETG Normal | PETG向け設定 |
+
+### ユーザープリセットの保存場所
+```
+profiles/presets/{プリセット名}.json
+```
+
+### プリセットJSONフォーマット
+SliceSettingsの全フィールド + メタデータ：
+```json
+{
+  "_printer": "Easythreed K9",
+  "_material": "PLA",
+  "layer_height": 0.2,
+  "infill_density": 20,
+  ... (全パラメーター)
+}
 ```
 
 ---

@@ -248,42 +248,30 @@ class MainWindow(QMainWindow):
         # ---- View mode toggle buttons ----
         toolbar.addWidget(QLabel(" View: "))
 
-        self._view_btn_model = QPushButton("3D Model")
-        self._view_btn_model.setCheckable(True)
-        self._view_btn_model.setChecked(True)
-        self._view_btn_model.setToolTip("Show 3D mesh only")
-        self._view_btn_model.setFixedHeight(26)
-        self._view_btn_model.setStyleSheet(
+        _btn_style = (
             "QPushButton{padding:2px 8px;}"
             "QPushButton:checked{background:#3a7bd5;color:white;border-radius:3px;}"
         )
+
+        self._view_btn_model = QPushButton("3D Model")
+        self._view_btn_model.setCheckable(True)
+        self._view_btn_model.setChecked(True)
+        self._view_btn_model.setToolTip("Show 3D mesh (opaque)")
+        self._view_btn_model.setFixedHeight(26)
+        self._view_btn_model.setStyleSheet(_btn_style)
         toolbar.addWidget(self._view_btn_model)
 
         self._view_btn_layers = QPushButton("Layer Preview")
         self._view_btn_layers.setCheckable(True)
-        self._view_btn_layers.setToolTip("Show sliced layer paths only")
+        self._view_btn_layers.setToolTip("Show layer paths + transparent mesh background")
         self._view_btn_layers.setFixedHeight(26)
-        self._view_btn_layers.setStyleSheet(
-            "QPushButton{padding:2px 8px;}"
-            "QPushButton:checked{background:#3a7bd5;color:white;border-radius:3px;}"
-        )
+        self._view_btn_layers.setStyleSheet(_btn_style)
         toolbar.addWidget(self._view_btn_layers)
 
-        self._view_btn_both = QPushButton("Both")
-        self._view_btn_both.setCheckable(True)
-        self._view_btn_both.setToolTip("Show transparent mesh + layer paths")
-        self._view_btn_both.setFixedHeight(26)
-        self._view_btn_both.setStyleSheet(
-            "QPushButton{padding:2px 8px;}"
-            "QPushButton:checked{background:#3a7bd5;color:white;border-radius:3px;}"
-        )
-        toolbar.addWidget(self._view_btn_both)
-
-        # Exclusive group
+        # Exclusive group (two buttons only)
         self._view_group = QButtonGroup(self)
         self._view_group.addButton(self._view_btn_model,  0)
         self._view_group.addButton(self._view_btn_layers, 1)
-        self._view_group.addButton(self._view_btn_both,   2)
         self._view_group.setExclusive(True)
         self._view_group.idClicked.connect(self._on_view_mode_changed)
 
@@ -388,9 +376,11 @@ class MainWindow(QMainWindow):
             self.model_list.addItem(item)
             self.model_list.setCurrentRow(len(self._meshes) - 1)
 
-            # Load into viewport
+            # Load into viewport and switch to 3D Model view
             self.viewport.load_mesh(tri_mesh)
             self.viewport.set_bed_size(bed_x, bed_y)
+            self._view_btn_model.setChecked(True)
+            self.viewport.set_view_mode(ViewMode.MODEL)
 
             # Enable slice
             self.tb_slice.setEnabled(True)
@@ -507,9 +497,9 @@ class MainWindow(QMainWindow):
         self.viewport.load_layer_paths(layers)
         self.viewport.set_layer_preview(len(layers) - 1)
 
-        # Auto-switch to "Both" view after slicing
-        self._view_btn_both.setChecked(True)
-        self.viewport.set_view_mode(ViewMode.BOTH)
+        # Auto-switch to Layer Preview after slicing
+        self._view_btn_layers.setChecked(True)
+        self.viewport.set_view_mode(ViewMode.LAYERS)
 
         # Update status
         self.layers_label.setText(f"Layers: {len(layers)}")
@@ -575,7 +565,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_view_mode_changed(self, btn_id: int):
-        mode_map = {0: ViewMode.MODEL, 1: ViewMode.LAYERS, 2: ViewMode.BOTH}
+        mode_map = {0: ViewMode.MODEL, 1: ViewMode.LAYERS}
         self.viewport.set_view_mode(mode_map.get(btn_id, ViewMode.MODEL))
 
     # ------------------------------------------------------------------

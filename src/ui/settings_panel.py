@@ -7,22 +7,28 @@ Tabs:
   Speed    – per-feature speeds, min layer time
   Support  – support structure settings
   Temp/Fan – temperatures + cooling fan
+
+Preset system:
+  Built-in presets live in profiles/presets/_builtin/
+  User presets saved to profiles/presets/<name>.json
 """
 
 import json
 import os
+import dataclasses
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QComboBox, QTabWidget, QGroupBox,
     QDoubleSpinBox, QSpinBox, QCheckBox, QSlider,
     QPushButton, QSizePolicy, QScrollArea, QFrame,
-    QButtonGroup, QRadioButton
+    QButtonGroup, QRadioButton, QInputDialog, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from src.core.slicer import SliceSettings
+from src.ui.printer_dialog import PrinterSettingsDialog
 
 
 # ---------------------------------------------------------------------------
@@ -141,15 +147,50 @@ class SettingsPanel(QWidget):
 
         # ── Printer / Material selectors ──────────────────────────────────
         top_gb, top_lo = _group("Machine", QFormLayout)
+
+        # Printer row: combo + settings button
+        printer_row = QHBoxLayout()
         self.printer_combo = QComboBox()
         for n in self._printer_profiles:
             self.printer_combo.addItem(n)
+        self.printer_settings_btn = QPushButton("⚙")
+        self.printer_settings_btn.setFixedSize(24, 24)
+        self.printer_settings_btn.setToolTip("Edit / add printer profiles")
+        self.printer_settings_btn.setStyleSheet(
+            "QPushButton{background:#444;border-radius:3px;font-size:12px;}"
+            "QPushButton:hover{background:#3a7bd5;}"
+        )
+        printer_row.addWidget(self.printer_combo, stretch=1)
+        printer_row.addWidget(self.printer_settings_btn)
+
         self.material_combo = QComboBox()
         for n in self._material_profiles:
             self.material_combo.addItem(n)
-        top_lo.addRow("Printer:", self.printer_combo)
+        top_lo.addRow("Printer:", printer_row)
         top_lo.addRow("Material:", self.material_combo)
         root.addWidget(top_gb)
+
+        # ── Preset bar ────────────────────────────────────────────────────
+        preset_gb, preset_lo = _group("Presets", QVBoxLayout)
+        pr_row1 = QHBoxLayout()
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(140)
+        self._refresh_preset_combo()
+        pr_row1.addWidget(self.preset_combo, stretch=1)
+        preset_lo.addLayout(pr_row1)
+
+        pr_row2 = QHBoxLayout()
+        self.preset_load_btn   = QPushButton("Load")
+        self.preset_save_btn   = QPushButton("Save…")
+        self.preset_delete_btn = QPushButton("Delete")
+        self.preset_delete_btn.setToolTip("Delete selected user preset")
+        for b in (self.preset_load_btn, self.preset_save_btn, self.preset_delete_btn):
+            b.setFixedHeight(24)
+        pr_row2.addWidget(self.preset_load_btn)
+        pr_row2.addWidget(self.preset_save_btn)
+        pr_row2.addWidget(self.preset_delete_btn)
+        preset_lo.addLayout(pr_row2)
+        root.addWidget(preset_gb)
 
         # ── Tabs ─────────────────────────────────────────────────────────
         self.tabs = QTabWidget()
@@ -446,6 +487,7 @@ class SettingsPanel(QWidget):
     def _connect_signals(self):
         self.printer_combo.currentTextChanged.connect(self._on_printer_changed)
         self.material_combo.currentTextChanged.connect(self._on_material_changed)
+        self.printer_settings_btn.clicked.connect(self._on_printer_settings)
 
         # Print tab
         self.layer_height_spin.valueChanged.connect(self._emit)
@@ -499,6 +541,11 @@ class SettingsPanel(QWidget):
         self.fan_slider.valueChanged.connect(self._on_fan)
         self.fan_fl_slider.valueChanged.connect(self._on_fan_fl)
         self.fan_kick_layer_spin.valueChanged.connect(self._emit)
+
+        # Preset buttons
+        self.preset_load_btn.clicked.connect(self._on_preset_load)
+        self.preset_save_btn.clicked.connect(self._on_preset_save)
+        self.preset_delete_btn.clicked.connect(self._on_preset_delete)
 
         # Buttons
         self.slice_btn.clicked.connect(self.slice_requested)
@@ -594,6 +641,29 @@ class SettingsPanel(QWidget):
         self._building = False
         self.settings_changed.emit(self.get_settings())
 
+    def _on_printer_settings(self):
+        """Open the printer configuration dialog."""
+        profiles_path = os.path.join(self._profiles_dir, 'printers.json')
+        dlg = PrinterSettingsDialog(
+            self._printer_profiles, profiles_path, parent=self
+        )
+        if dlg.exec() == PrinterSettingsDialog.DialogCode.Accepted:
+            # Reload profiles and refresh the combo
+            current = self.printer_combo.currentText()
+            self._printer_profiles = dlg.get_profiles()
+
+            self.printer_combo.blockSignals(True)
+            self.printer_combo.clear()
+            for n in self._printer_profiles:
+                self.printer_combo.addItem(n)
+            # Restore selection if still present
+            idx = self.printer_combo.findText(current)
+            self.printer_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            self.printer_combo.blockSignals(False)
+
+            # Re-apply printer defaults
+            self._on_printer_changed(self.printer_combo.currentText())
+
     def _on_material_changed(self, name: str):
         mat = self._material_profiles.get(name, {})
         self._building = True
@@ -609,6 +679,202 @@ class SettingsPanel(QWidget):
             self.retraction_dist_spin.setValue(float(mat['retraction']))
         self._building = False
         self._emit()
+
+    # -----------------------------------------------------------------------
+    # Preset system
+    # -----------------------------------------------------------------------
+
+    def _presets_dir(self) -> str:
+        d = os.path.join(self._profiles_dir, 'presets')
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _user_preset_files(self) -> dict:
+        """Return {display_name: filepath} for all user presets."""
+        d = self._presets_dir()
+        result = {}
+        for fn in sorted(os.listdir(d)):
+            if fn.endswith('.json') and not fn.startswith('_'):
+                name = fn[:-5]  # strip .json
+                result[name] = os.path.join(d, fn)
+        return result
+
+    def _refresh_preset_combo(self):
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+
+        # Built-in presets
+        for name in _BUILTIN_PRESETS:
+            self.preset_combo.addItem(f"[Built-in] {name}")
+
+        # User presets
+        for name in self._user_preset_files():
+            self.preset_combo.addItem(name)
+
+        self.preset_combo.blockSignals(False)
+
+    def _on_preset_load(self):
+        text = self.preset_combo.currentText()
+        if not text:
+            return
+
+        if text.startswith("[Built-in] "):
+            key = text[len("[Built-in] "):]
+            data = _BUILTIN_PRESETS.get(key, {})
+            self._apply_preset_data(data)
+            return
+
+        # User preset
+        files = self._user_preset_files()
+        path = files.get(text)
+        if path and os.path.isfile(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                self._apply_preset_data(data)
+            except Exception as e:
+                QMessageBox.warning(self, "Preset Error", f"Failed to load preset:\n{e}")
+
+    def _on_preset_save(self):
+        # Get name from user
+        name, ok = QInputDialog.getText(
+            self, "Save Preset", "Preset name:",
+            text=self.preset_combo.currentText().replace("[Built-in] ", "")
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip().replace('/', '_').replace('\\', '_')
+
+        s = self.get_settings()
+        data = dataclasses.asdict(s)
+        # Also store which printer/material is selected
+        data['_printer'] = self.printer_combo.currentText()
+        data['_material'] = self.material_combo.currentText()
+
+        path = os.path.join(self._presets_dir(), f"{name}.json")
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+            self._refresh_preset_combo()
+            # Select the saved preset
+            idx = self.preset_combo.findText(name)
+            if idx >= 0:
+                self.preset_combo.setCurrentIndex(idx)
+            QMessageBox.information(self, "Saved", f"Preset '{name}' saved.")
+        except Exception as e:
+            QMessageBox.warning(self, "Save Error", f"Could not save preset:\n{e}")
+
+    def _on_preset_delete(self):
+        text = self.preset_combo.currentText()
+        if text.startswith("[Built-in] "):
+            QMessageBox.information(self, "Cannot Delete", "Built-in presets cannot be deleted.")
+            return
+        files = self._user_preset_files()
+        path = files.get(text)
+        if not path:
+            return
+        reply = QMessageBox.question(
+            self, "Delete Preset",
+            f"Delete preset '{text}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                os.remove(path)
+                self._refresh_preset_combo()
+            except Exception as e:
+                QMessageBox.warning(self, "Delete Error", str(e))
+
+    def _apply_preset_data(self, data: dict):
+        """Apply a preset dict to all UI controls."""
+        self._building = True
+        try:
+            # Printer / material
+            if '_printer' in data:
+                idx = self.printer_combo.findText(data['_printer'])
+                if idx >= 0:
+                    self.printer_combo.setCurrentIndex(idx)
+            if '_material' in data:
+                idx = self.material_combo.findText(data['_material'])
+                if idx >= 0:
+                    self.material_combo.setCurrentIndex(idx)
+
+            def sv(spin, key):
+                if key in data and spin is not None:
+                    try: spin.setValue(data[key])
+                    except Exception: pass
+
+            def sc(chk, key):
+                if key in data and chk is not None:
+                    chk.setChecked(bool(data[key]))
+
+            def scombo(combo, key):
+                if key in data and combo is not None:
+                    idx = combo.findText(str(data[key]))
+                    if idx >= 0: combo.setCurrentIndex(idx)
+
+            # Print tab
+            sv(self.layer_height_spin,       'layer_height')
+            sv(self.first_layer_height_spin, 'first_layer_height')
+            sv(self.wall_count_spin,         'wall_count')
+            sc(self.outer_before_inner_chk,  'outer_before_inner')
+            if 'infill_density' in data:
+                self.infill_slider.setValue(int(data['infill_density']))
+            scombo(self.infill_pattern_combo,'infill_pattern')
+            sv(self.infill_angle_spin,       'infill_angle')
+            sv(self.top_layers_spin,         'top_layers')
+            sv(self.bottom_layers_spin,      'bottom_layers')
+            sc(self.brim_check,              'brim_enabled')
+            sv(self.brim_width_spin,         'brim_width')
+
+            # Quality tab
+            sv(self.line_width_pct_spin,      'line_width_pct')
+            scombo(self.seam_combo,           'seam_position')
+            sv(self.infill_overlap_spin,      'infill_overlap')
+            sv(self.skin_overlap_spin,        'skin_overlap')
+            sc(self.retraction_check,         'retraction_enabled')
+            sv(self.retraction_dist_spin,     'retraction_distance')
+            sv(self.retraction_speed_spin,    'retraction_speed')
+            sv(self.retraction_min_dist_spin, 'retraction_min_distance')
+            sv(self.retraction_extra_spin,    'retraction_extra_prime')
+            sv(self.z_hop_spin,               'retraction_z_hop')
+
+            # Speed tab
+            sv(self.outer_perim_speed_spin,  'outer_perimeter_speed')
+            sv(self.print_speed_spin,        'print_speed')
+            sv(self.top_bottom_speed_spin,   'top_bottom_speed')
+            sv(self.infill_speed_spin,       'infill_speed')
+            sv(self.bridge_speed_spin,       'bridge_speed')
+            sv(self.first_layer_speed_spin,  'first_layer_speed')
+            sv(self.travel_speed_spin,       'travel_speed')
+            sv(self.min_layer_time_spin,     'min_layer_time')
+
+            # Support tab
+            sc(self.support_check,           'support_enabled')
+            if 'support_threshold' in data:
+                self.support_thresh_slider.setValue(int(data['support_threshold']))
+            scombo(self.support_pattern_combo,'support_pattern')
+            if 'support_density' in data:
+                self.support_density_slider.setValue(int(data['support_density']))
+            sv(self.support_z_dist_spin,     'support_z_distance')
+            sv(self.support_xy_dist_spin,    'support_xy_distance')
+            sc(self.support_iface_check,     'support_interface_enabled')
+            sv(self.support_iface_layers,    'support_interface_layers')
+
+            # Temp/Fan tab
+            sv(self.print_temp_spin,              'print_temp')
+            sv(self.print_temp_first_layer_spin,  'print_temp_first_layer')
+            if self.bed_temp_spin.isEnabled():
+                sv(self.bed_temp_spin,            'bed_temp')
+            if 'fan_speed' in data:
+                self.fan_slider.setValue(int(data['fan_speed']))
+            if 'fan_first_layer' in data:
+                self.fan_fl_slider.setValue(int(data['fan_first_layer']))
+            sv(self.fan_kick_layer_spin,          'fan_kick_in_layer')
+
+        finally:
+            self._building = False
+            self._emit()
 
     # -----------------------------------------------------------------------
     # Public API
@@ -720,3 +986,133 @@ def _default_materials() -> dict:
     return {
         'PLA': {'print_temp': 210, 'bed_temp': 60, 'fan_speed': 100, 'retraction': 5.0}
     }
+
+
+# ---------------------------------------------------------------------------
+# Built-in presets
+# ---------------------------------------------------------------------------
+
+_BUILTIN_PRESETS = {
+    # ─── Generic ──────────────────────────────────────────────────────────
+    "Draft (0.3mm, 10%, Fast)": {
+        'layer_height': 0.3, 'first_layer_height': 0.35,
+        'wall_count': 2, 'infill_density': 10, 'infill_pattern': 'lines',
+        'top_layers': 3, 'bottom_layers': 3,
+        'outer_perimeter_speed': 60, 'print_speed': 80, 'infill_speed': 100,
+        'top_bottom_speed': 60, 'first_layer_speed': 30, 'travel_speed': 200,
+        'print_temp': 210, 'print_temp_first_layer': 215, 'bed_temp': 60,
+        'fan_speed': 100, 'fan_first_layer': 0, 'fan_kick_in_layer': 2,
+        'retraction_enabled': True, 'retraction_distance': 5.0,
+        'retraction_speed': 45, 'retraction_z_hop': 0.0,
+        'brim_enabled': False, 'support_enabled': False,
+        '_material': 'PLA',
+    },
+    "Normal Quality (0.2mm, 20%)": {
+        'layer_height': 0.2, 'first_layer_height': 0.3,
+        'wall_count': 3, 'infill_density': 20, 'infill_pattern': 'grid',
+        'top_layers': 4, 'bottom_layers': 4,
+        'outer_perimeter_speed': 40, 'print_speed': 60, 'infill_speed': 80,
+        'top_bottom_speed': 40, 'first_layer_speed': 25, 'travel_speed': 200,
+        'print_temp': 210, 'print_temp_first_layer': 215, 'bed_temp': 60,
+        'fan_speed': 100, 'fan_first_layer': 0, 'fan_kick_in_layer': 2,
+        'retraction_enabled': True, 'retraction_distance': 5.0,
+        'retraction_speed': 45, 'retraction_z_hop': 0.0,
+        'brim_enabled': False, 'support_enabled': False,
+        '_material': 'PLA',
+    },
+    "High Quality (0.15mm, 30%)": {
+        'layer_height': 0.15, 'first_layer_height': 0.2,
+        'wall_count': 4, 'infill_density': 30, 'infill_pattern': 'grid',
+        'top_layers': 5, 'bottom_layers': 5,
+        'outer_perimeter_speed': 25, 'print_speed': 40, 'infill_speed': 60,
+        'top_bottom_speed': 30, 'first_layer_speed': 20, 'travel_speed': 150,
+        'print_temp': 205, 'print_temp_first_layer': 210, 'bed_temp': 60,
+        'fan_speed': 100, 'fan_first_layer': 0, 'fan_kick_in_layer': 3,
+        'retraction_enabled': True, 'retraction_distance': 5.0,
+        'retraction_speed': 45, 'retraction_z_hop': 0.05,
+        'brim_enabled': False, 'support_enabled': False,
+        '_material': 'PLA',
+    },
+    "Strong (0.2mm, 50%, Honeycomb)": {
+        'layer_height': 0.2, 'first_layer_height': 0.3,
+        'wall_count': 4, 'infill_density': 50, 'infill_pattern': 'honeycomb',
+        'top_layers': 5, 'bottom_layers': 5,
+        'outer_perimeter_speed': 40, 'print_speed': 60, 'infill_speed': 80,
+        'top_bottom_speed': 40, 'first_layer_speed': 25, 'travel_speed': 200,
+        'print_temp': 210, 'print_temp_first_layer': 215, 'bed_temp': 60,
+        'fan_speed': 100, 'fan_first_layer': 0, 'fan_kick_in_layer': 2,
+        'retraction_enabled': True, 'retraction_distance': 5.0,
+        'retraction_speed': 45, 'retraction_z_hop': 0.0,
+        'brim_enabled': True, 'brim_width': 6.0, 'support_enabled': False,
+        '_material': 'PLA',
+    },
+    "With Support (Normal)": {
+        'layer_height': 0.2, 'first_layer_height': 0.3,
+        'wall_count': 3, 'infill_density': 20, 'infill_pattern': 'grid',
+        'top_layers': 4, 'bottom_layers': 4,
+        'outer_perimeter_speed': 40, 'print_speed': 60, 'infill_speed': 80,
+        'top_bottom_speed': 40, 'first_layer_speed': 25, 'travel_speed': 200,
+        'print_temp': 210, 'print_temp_first_layer': 215, 'bed_temp': 60,
+        'fan_speed': 100, 'fan_first_layer': 0, 'fan_kick_in_layer': 2,
+        'retraction_enabled': True, 'retraction_distance': 6.0,
+        'retraction_speed': 45, 'retraction_z_hop': 0.2,
+        'brim_enabled': False,
+        'support_enabled': True, 'support_threshold': 45.0,
+        'support_density': 15, 'support_z_distance': 0.2, 'support_xy_distance': 0.7,
+        '_material': 'PLA',
+    },
+    # ─── Easythreed K9 ────────────────────────────────────────────────────
+    "K9 – Draft (0.3mm, 10%)": {
+        '_printer': 'Easythreed K9', '_material': 'PLA',
+        'layer_height': 0.3, 'first_layer_height': 0.3,
+        'wall_count': 2, 'infill_density': 10, 'infill_pattern': 'lines',
+        'top_layers': 3, 'bottom_layers': 3,
+        'outer_perimeter_speed': 20, 'print_speed': 30, 'infill_speed': 35,
+        'top_bottom_speed': 20, 'first_layer_speed': 15, 'travel_speed': 60,
+        'print_temp': 200, 'print_temp_first_layer': 205, 'bed_temp': 0,
+        'fan_speed': 100, 'fan_first_layer': 0, 'fan_kick_in_layer': 3,
+        'retraction_enabled': True, 'retraction_distance': 6.5,
+        'retraction_speed': 25, 'retraction_z_hop': 0.0,
+        'brim_enabled': False, 'support_enabled': False,
+    },
+    "K9 – Normal (0.2mm, 20%)": {
+        '_printer': 'Easythreed K9', '_material': 'PLA',
+        'layer_height': 0.2, 'first_layer_height': 0.25,
+        'wall_count': 3, 'infill_density': 20, 'infill_pattern': 'grid',
+        'top_layers': 4, 'bottom_layers': 4,
+        'outer_perimeter_speed': 18, 'print_speed': 25, 'infill_speed': 30,
+        'top_bottom_speed': 18, 'first_layer_speed': 12, 'travel_speed': 60,
+        'print_temp': 200, 'print_temp_first_layer': 205, 'bed_temp': 0,
+        'fan_speed': 100, 'fan_first_layer': 0, 'fan_kick_in_layer': 3,
+        'retraction_enabled': True, 'retraction_distance': 6.5,
+        'retraction_speed': 25, 'retraction_z_hop': 0.0,
+        'brim_enabled': True, 'brim_width': 5.0, 'support_enabled': False,
+    },
+    "K9 – Quality (0.15mm, 30%)": {
+        '_printer': 'Easythreed K9', '_material': 'PLA',
+        'layer_height': 0.15, 'first_layer_height': 0.2,
+        'wall_count': 3, 'infill_density': 30, 'infill_pattern': 'grid',
+        'top_layers': 5, 'bottom_layers': 5,
+        'outer_perimeter_speed': 15, 'print_speed': 20, 'infill_speed': 25,
+        'top_bottom_speed': 15, 'first_layer_speed': 10, 'travel_speed': 50,
+        'print_temp': 200, 'print_temp_first_layer': 205, 'bed_temp': 0,
+        'fan_speed': 100, 'fan_first_layer': 0, 'fan_kick_in_layer': 3,
+        'retraction_enabled': True, 'retraction_distance': 6.5,
+        'retraction_speed': 25, 'retraction_z_hop': 0.1,
+        'brim_enabled': True, 'brim_width': 5.0, 'support_enabled': False,
+    },
+    # ─── PETG ─────────────────────────────────────────────────────────────
+    "PETG Normal (0.2mm, 20%)": {
+        'layer_height': 0.2, 'first_layer_height': 0.3,
+        'wall_count': 3, 'infill_density': 20, 'infill_pattern': 'grid',
+        'top_layers': 4, 'bottom_layers': 4,
+        'outer_perimeter_speed': 35, 'print_speed': 50, 'infill_speed': 60,
+        'top_bottom_speed': 35, 'first_layer_speed': 20, 'travel_speed': 180,
+        'print_temp': 235, 'print_temp_first_layer': 240, 'bed_temp': 80,
+        'fan_speed': 50, 'fan_first_layer': 0, 'fan_kick_in_layer': 3,
+        'retraction_enabled': True, 'retraction_distance': 6.0,
+        'retraction_speed': 40, 'retraction_z_hop': 0.2,
+        'brim_enabled': False, 'support_enabled': False,
+        '_material': 'PETG',
+    },
+}
