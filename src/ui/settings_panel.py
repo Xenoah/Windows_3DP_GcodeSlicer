@@ -15,6 +15,7 @@ Preset system:
 
 import json
 import os
+import sys
 import dataclasses
 
 from PyQt6.QtWidgets import (
@@ -125,6 +126,10 @@ class SettingsPanel(QWidget):
     # -----------------------------------------------------------------------
 
     def _find_profiles_dir(self) -> str:
+        # When running as a PyInstaller frozen exe, sys._MEIPASS is the
+        # extracted bundle root; data files live there.
+        if getattr(sys, 'frozen', False):
+            return os.path.join(sys._MEIPASS, 'profiles')
         here = os.path.dirname(os.path.abspath(__file__))
         return os.path.join(os.path.dirname(os.path.dirname(here)), 'profiles')
 
