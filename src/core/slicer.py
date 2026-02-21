@@ -36,31 +36,72 @@ from src.core.infill import get_infill_function, solid_infill
 
 @dataclass
 class SliceSettings:
+    # ---- Layer / extrusion ----
     layer_height: float = 0.2
     first_layer_height: float = 0.3
+    line_width: float = 0.4            # absolute mm (derived from nozzle * pct)
+    line_width_pct: float = 100.0      # % of nozzle diameter (80–150)
+    nozzle_diameter: float = 0.4
+    filament_diameter: float = 1.75
+
+    # ---- Walls ----
     wall_count: int = 3
-    line_width: float = 0.4
-    infill_density: float = 20.0          # percent
-    infill_pattern: str = 'grid'          # 'grid', 'lines', 'honeycomb'
+    outer_before_inner: bool = False   # print order: outer first
+    seam_position: str = 'back'        # 'back' | 'random' | 'sharpest'
+
+    # ---- Infill ----
+    infill_density: float = 20.0       # percent 0–100
+    infill_pattern: str = 'grid'       # 'grid' | 'lines' | 'honeycomb'
+    infill_angle: float = 45.0         # base angle in degrees
+    infill_overlap: float = 10.0       # % overlap into perimeter
+    sparse_before_walls: bool = False  # infill before walls (less stringing)
+
+    # ---- Top / Bottom ----
     top_layers: int = 4
     bottom_layers: int = 4
-    support_enabled: bool = False
-    support_threshold: float = 45.0
-    support_density: float = 20.0
-    retraction_enabled: bool = True
-    retraction_distance: float = 5.0
-    retraction_speed: float = 45.0
-    print_speed: float = 60.0
-    first_layer_speed: float = 25.0
-    infill_speed: float = 80.0
-    travel_speed: float = 200.0
-    print_temp: int = 210
-    bed_temp: int = 60
-    fan_speed: int = 100
+    skin_overlap: float = 5.0          # % overlap of top/bottom into perimeter
+
+    # ---- Skirt / Brim ----
     brim_enabled: bool = False
-    brim_width: float = 8.0              # mm
-    filament_diameter: float = 1.75
-    nozzle_diameter: float = 0.4
+    brim_width: float = 8.0            # mm
+
+    # ---- Retraction ----
+    retraction_enabled: bool = True
+    retraction_distance: float = 5.0   # mm
+    retraction_speed: float = 45.0     # mm/s
+    retraction_z_hop: float = 0.0      # mm lift during travel (0 = off)
+    retraction_min_distance: float = 1.5  # mm – shorter travels skip retract
+    retraction_extra_prime: float = 0.0   # mm extra material after retract
+
+    # ---- Speed ----
+    print_speed: float = 60.0          # general / inner wall mm/s
+    outer_perimeter_speed: float = 40.0  # outer wall (quality critical)
+    top_bottom_speed: float = 40.0     # top/bottom solid layers
+    infill_speed: float = 80.0         # sparse infill
+    bridge_speed: float = 25.0         # bridging
+    first_layer_speed: float = 25.0    # all features on layer 0
+    travel_speed: float = 200.0
+
+    # ---- Temperature ----
+    print_temp: int = 210
+    print_temp_first_layer: int = 215  # higher for better adhesion
+    bed_temp: int = 60
+
+    # ---- Cooling / Fan ----
+    fan_speed: int = 100               # normal fan speed %
+    fan_first_layer: int = 0           # fan % for layer 0 (usually 0)
+    fan_kick_in_layer: int = 2         # layer number to start fan
+    min_layer_time: float = 5.0        # minimum seconds/layer (slow down if faster)
+
+    # ---- Support ----
+    support_enabled: bool = False
+    support_threshold: float = 45.0    # overhang angle degrees
+    support_density: float = 15.0      # percent
+    support_pattern: str = 'lines'     # 'lines' | 'grid' | 'zigzag'
+    support_interface_enabled: bool = True
+    support_interface_layers: int = 2
+    support_z_distance: float = 0.2    # mm gap above/below
+    support_xy_distance: float = 0.7   # mm gap from model sides
 
 
 # ---------------------------------------------------------------------------

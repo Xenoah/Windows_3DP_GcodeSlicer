@@ -84,11 +84,14 @@ class GCodeGenerator:
         w("G90 ; absolute positioning\n")
         w("M82 ; absolute extrusion\n")
 
-        # Heat up
-        w(f"M104 S{settings.print_temp} ; set extruder temp\n")
-        w(f"M140 S{settings.bed_temp} ; set bed temp\n")
-        w(f"M109 S{settings.print_temp} ; wait for extruder\n")
-        w(f"M190 S{settings.bed_temp} ; wait for bed\n")
+        # Heat up (first-layer temp may differ)
+        first_temp = getattr(settings, 'print_temp_first_layer', settings.print_temp)
+        w(f"M104 S{first_temp} ; set extruder temp (first layer)\n")
+        if settings.bed_temp > 0:
+            w(f"M140 S{settings.bed_temp} ; set bed temp\n")
+        w(f"M109 S{first_temp} ; wait for extruder\n")
+        if settings.bed_temp > 0:
+            w(f"M190 S{settings.bed_temp} ; wait for bed\n")
 
         # Start G-code from profile
         start_gcode = printer_profile.get('start_gcode', 'G28\nG92 E0')
@@ -98,24 +101,31 @@ class GCodeGenerator:
 
         w("G92 E0 ; reset extruder\n")
 
-        # Fan settings
-        if settings.fan_speed > 0:
-            fan_pwm = int(round(settings.fan_speed * 255 / 100))
-            # Fan off for first layer, then on
-            w("M107 ; fan off for first layer\n")
+        # Fan: first layer uses fan_first_layer (usually 0)
+        fan_first = getattr(settings, 'fan_first_layer', 0)
+        if fan_first > 0:
+            w(f"M106 S{int(fan_first * 255 / 100)} ; first-layer fan\n")
         else:
-            w("M107 ; fan off\n")
+            w("M107 ; fan off for first layer\n")
 
         w("\n")
 
         # --- Layer loop ---
+        fan_kick_layer = getattr(settings, 'fan_kick_in_layer', 2)
+        first_temp     = getattr(settings, 'print_temp_first_layer', settings.print_temp)
+        normal_temp    = settings.print_temp
+
         for layer in layers:
             self._write_layer(buf, layer, settings, filament_dia, nozzle_dia)
 
-            # Turn fan on after first layer
-            if layer.layer_num == 0 and settings.fan_speed > 0:
+            # Fan kick-in
+            if layer.layer_num == fan_kick_layer - 1 and settings.fan_speed > 0:
                 fan_pwm = int(round(settings.fan_speed * 255 / 100))
-                buf.write(f"M106 S{fan_pwm} ; fan on\n")
+                buf.write(f"M106 S{fan_pwm} ; fan on (layer {layer.layer_num + 1})\n")
+
+            # Switch from first-layer temp to normal temp after layer 0
+            if layer.layer_num == 0 and first_temp != normal_temp:
+                buf.write(f"M104 S{normal_temp} ; normal print temp\n")
 
         # --- End G-code ---
         end_gcode = printer_profile.get('end_gcode', 'M104 S0\nM140 S0\nM84')
@@ -142,11 +152,19 @@ class GCodeGenerator:
         nozzle_dia: float
     ):
         w = buf.write
-        lh = settings.first_layer_height if layer.layer_num == 0 else settings.layer_height
-        print_speed = settings.first_layer_speed if layer.layer_num == 0 else settings.print_speed
-        infill_speed = settings.first_layer_speed if layer.layer_num == 0 else settings.infill_speed
+        is_first = (layer.layer_num == 0)
+        lh = settings.first_layer_height if is_first else settings.layer_height
 
-        w(f"\n; Layer {layer.layer_num + 1} Z={layer.z:.4f}\n")
+        # Per-feature speeds (fall back to print_speed for old settings)
+        fl = settings.first_layer_speed
+        outer_spd   = fl if is_first else getattr(settings, 'outer_perimeter_speed', settings.print_speed)
+        inner_spd   = fl if is_first else settings.print_speed
+        tb_spd      = fl if is_first else getattr(settings, 'top_bottom_speed', settings.print_speed)
+        infill_spd  = fl if is_first else settings.infill_speed
+        bridge_spd  = fl if is_first else getattr(settings, 'bridge_speed', settings.print_speed)
+        retract     = settings.retraction_enabled
+
+        w(f"\n; Layer {layer.layer_num + 1}  Z={layer.z:.4f}  lh={lh:.3f}\n")
 
         # Move to layer height
         z_feed = int(settings.travel_speed * 60)
@@ -155,38 +173,36 @@ class GCodeGenerator:
 
         # Brim (first layer only)
         if layer.brim:
-            w("; Brim\n")
+            w("; TYPE:BRIM\n")
             for path in layer.brim:
-                self._write_path(buf, path, settings, lh, filament_dia,
-                                 print_speed, retract=settings.retraction_enabled)
+                self._write_path(buf, path, settings, lh, filament_dia, inner_spd, retract)
 
-        # Perimeters
+        # Perimeters: outer first or inner first depending on setting
         if layer.perimeters:
-            w("; Perimeters\n")
-            for path in layer.perimeters:
-                self._write_path(buf, path, settings, lh, filament_dia,
-                                 print_speed, retract=settings.retraction_enabled)
+            w("; TYPE:WALL-OUTER\n")
+            perims = layer.perimeters
+            # First path = outer wall (slowest), rest = inner
+            for idx, path in enumerate(perims):
+                spd = outer_spd if idx == 0 else inner_spd
+                self._write_path(buf, path, settings, lh, filament_dia, spd, retract)
 
         # Solid top/bottom
         if layer.top_bottom:
-            w("; Solid infill\n")
+            w("; TYPE:SKIN\n")
             for path in layer.top_bottom:
-                self._write_path(buf, path, settings, lh, filament_dia,
-                                 infill_speed, retract=settings.retraction_enabled)
+                self._write_path(buf, path, settings, lh, filament_dia, tb_spd, retract)
 
         # Sparse infill
         if layer.infill:
-            w("; Infill\n")
+            w("; TYPE:FILL\n")
             for path in layer.infill:
-                self._write_path(buf, path, settings, lh, filament_dia,
-                                 infill_speed, retract=settings.retraction_enabled)
+                self._write_path(buf, path, settings, lh, filament_dia, infill_spd, retract)
 
         # Support
         if layer.support:
-            w("; Support\n")
+            w("; TYPE:SUPPORT\n")
             for path in layer.support:
-                self._write_path(buf, path, settings, lh, filament_dia,
-                                 infill_speed, retract=settings.retraction_enabled)
+                self._write_path(buf, path, settings, lh, filament_dia, infill_spd, retract)
 
     # ------------------------------------------------------------------
     # Internal: path writing
@@ -254,18 +270,32 @@ class GCodeGenerator:
         settings: SliceSettings,
         retract: bool = True
     ):
-        """Move to (x, y) without extruding, with optional retraction."""
+        """Move to (x, y) without extruding, with optional retraction + z-hop."""
         dist = math.hypot(x - self.current_x, y - self.current_y)
-        if dist < 0.5:
-            return  # Short enough to skip retraction/travel
+        min_dist = getattr(settings, 'retraction_min_distance', 1.5)
+        if dist < min_dist:
+            # Short travel: just move, no retract
+            buf.write(f"G1 X{x:.4f} Y{y:.4f} F{int(settings.travel_speed * 60)}\n")
+            self.current_x = x
+            self.current_y = y
+            return
 
         w = buf.write
         feed_travel = int(settings.travel_speed * 60)
+        z_hop = getattr(settings, 'retraction_z_hop', 0.0)
 
         if retract and not self.is_retracted:
             self._retract(buf, settings)
+            # Z-hop after retraction
+            if z_hop > 0:
+                w(f"G1 Z{self.current_z + z_hop:.4f} F{feed_travel}\n")
 
         w(f"G1 X{x:.4f} Y{y:.4f} F{feed_travel}\n")
+
+        # Z-hop down before print
+        if retract and z_hop > 0 and self.is_retracted:
+            w(f"G1 Z{self.current_z:.4f} F{feed_travel}\n")
+
         self.current_x = x
         self.current_y = y
         self.current_f = feed_travel
@@ -278,9 +308,10 @@ class GCodeGenerator:
         self.is_retracted = True
 
     def _deretract(self, buf: io.StringIO, settings: SliceSettings):
-        """Write de-retraction G-code."""
+        """Write de-retraction G-code (+ extra prime if set)."""
         feed_r = int(settings.retraction_speed * 60)
-        self.e_total += settings.retraction_distance
+        extra = getattr(settings, 'retraction_extra_prime', 0.0)
+        self.e_total += settings.retraction_distance + extra
         buf.write(f"G1 E{self.e_total:.5f} F{feed_r} ; deretract\n")
         self.is_retracted = False
 
