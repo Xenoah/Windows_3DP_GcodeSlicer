@@ -138,8 +138,8 @@ def _perspective(fov_deg: float, aspect: float, near: float, far: float) -> np.n
     m[0, 0] = f / aspect
     m[1, 1] = f
     m[2, 2] = (far + near) * nf
-    m[2, 3] = -1.0
-    m[3, 2] = 2.0 * far * near * nf
+    m[2, 3] = 2.0 * far * near * nf  # depth bias  (was wrongly -1.0)
+    m[3, 2] = -1.0                    # generates clip.w = -z_cam
     return m
 
 
@@ -594,7 +594,6 @@ class Viewport3D(QOpenGLWidget):
             # Current layer highlight z
             cur_z = self._layer_z_sorted[idx] if self._layer_z_sorted else None
 
-            glLineWidth(1.5)
             for vao, vbo, vc, color, z, type_name in self._layer_draws:
                 if z > max_z + 1e-4:
                     continue
@@ -607,14 +606,13 @@ class Viewport3D(QOpenGLWidget):
                 glBindVertexArray(vao)
                 glDrawArrays(GL_LINES, 0, vc)
                 glBindVertexArray(0)
-            glLineWidth(1.0)
         except Exception as e:
             print(f"[Viewport] _draw_layers error: {e}")
 
     def _build_grid(self):
-        """Build plate grid geometry."""
-        if not self._gl_ready:
-            return
+        """Build plate grid geometry. Safe to call from initializeGL."""
+        # Note: do NOT guard with _gl_ready here – this is called from initializeGL
+        # before _gl_ready is set to True.
         if self._grid_vao is not None:
             try:
                 glDeleteVertexArrays(1, [self._grid_vao])
