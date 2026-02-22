@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         self._slice_thread: Optional[QThread] = None
         self._slice_worker: Optional[SlicerWorker] = None
         self._active_mesh_idx: int = -1
+        self._bed_size: Optional[tuple] = None  # (x, y) – 変化検出用
 
         self._setup_ui()
         self._setup_menu()
@@ -437,9 +438,48 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_settings_changed(self, settings):
-        """プリンターや設定が変わったらビューポートの床サイズを更新する。"""
+        """プリンターや設定が変わった際の処理。
+        - ベッドサイズ変化 → グリッド更新 + 全メッシュ再センタリング
+        - 任意の設定変更  → スライス済みデータを破棄
+        """
         bed_x, bed_y = self.settings_panel.get_bed_size()
-        self.viewport.set_bed_size(bed_x, bed_y)
+        old = self._bed_size
+        bed_changed = old is not None and (
+            abs(bed_x - old[0]) > 0.5 or abs(bed_y - old[1]) > 0.5
+        )
+
+        # ベッドサイズが変わった（または初回）のときだけビューポートを更新
+        if old is None or bed_changed:
+            self._bed_size = (bed_x, bed_y)
+            self.viewport.set_bed_size(bed_x, bed_y)
+
+        if bed_changed and self._meshes:
+            # 全メッシュを新しいベッドサイズの中心に再配置
+            for mesh in self._meshes:
+                mesh.center_on_bed((bed_x, bed_y))
+
+            # 現在表示中のメッシュをビューポートに再アップロード
+            row = self.model_list.currentRow()
+            if 0 <= row < len(self._meshes):
+                self.viewport.load_mesh(self._meshes[row].trimesh)
+
+            self.status_label.setText(
+                f"Bed size changed to {int(bed_x)}×{int(bed_y)} mm — models re-centered"
+            )
+
+        # 設定が変わったらスライス済みデータを破棄（再スライスが必要）
+        if self._sliced_layers:
+            self._invalidate_sliced_data()
+
+    def _invalidate_sliced_data(self):
+        """スライス済みデータを破棄してエクスポートを無効化する。"""
+        self.viewport.clear_layers()
+        self.layer_slider.reset()
+        self._sliced_layers = []
+        self._gcode_str = None
+        self.tb_export.setEnabled(False)
+        self.action_export_gcode.setEnabled(False)
+        self.settings_panel.set_export_enabled(False)
 
     # ------------------------------------------------------------------
     # Slicing
@@ -487,9 +527,14 @@ class MainWindow(QMainWindow):
         self._slice_worker.progress.connect(self._on_slice_progress)
         self._slice_worker.finished.connect(self._on_slice_finished)
         self._slice_worker.error.connect(self._on_slice_error)
+        # ワーカー終了 → スレッドを止める
         self._slice_worker.finished.connect(self._slice_thread.quit)
         self._slice_worker.error.connect(self._slice_thread.quit)
-        self._slice_thread.finished.connect(self._slice_thread.deleteLater)
+        # スレッド終了 → オブジェクト削除 + Python 参照をクリア
+        # NOTE: deleteLater だけではスレッドオブジェクトが C++ 側で破棄された後も
+        #       Python 参照が残りクラッシュする。_on_thread_done で必ず None にする。
+        self._slice_thread.finished.connect(self._slice_worker.deleteLater)
+        self._slice_thread.finished.connect(self._on_thread_done)
 
         self._slice_thread.start()
 
@@ -538,6 +583,16 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.status_label.setText("Slicing failed!")
         QMessageBox.critical(self, "Slice Error", msg)
+
+    def _on_thread_done(self):
+        """スレッドが完全に終了したら Python 参照を None にする。
+        これをしないと 2 回目のスライス時に deleteLater 済みの C++ オブジェクトに
+        アクセスしてクラッシュする。"""
+        thread = self._slice_thread
+        self._slice_thread = None
+        self._slice_worker = None
+        if thread is not None:
+            thread.deleteLater()
 
     # ------------------------------------------------------------------
     # G-code export
