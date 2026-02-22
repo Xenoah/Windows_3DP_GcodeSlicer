@@ -111,12 +111,28 @@ class GCodeGenerator:
         w("\n")
 
         # --- Layer loop ---
-        fan_kick_layer = getattr(settings, 'fan_kick_in_layer', 2)
-        first_temp     = getattr(settings, 'print_temp_first_layer', settings.print_temp)
-        normal_temp    = settings.print_temp
+        fan_kick_layer   = getattr(settings, 'fan_kick_in_layer', 2)
+        first_temp       = getattr(settings, 'print_temp_first_layer', settings.print_temp)
+        normal_temp      = settings.print_temp
+        spiralize        = getattr(settings, 'spiralize_mode', False)
+        spiralize_base   = settings.bottom_layers  # base solid layers before spiral
 
-        for layer in layers:
-            self._write_layer(buf, layer, settings, filament_dia, nozzle_dia)
+        for i, layer in enumerate(layers):
+            is_spiralize_wall = spiralize and (layer.layer_num >= spiralize_base)
+
+            if is_spiralize_wall:
+                # Next layer Z for spiral interpolation
+                if i + 1 < len(layers):
+                    next_z = layers[i + 1].z
+                else:
+                    next_z = layer.z + settings.layer_height
+                is_first_spiral = (layer.layer_num == spiralize_base)
+                self._write_spiralize_layer(
+                    buf, layer, next_z, settings,
+                    filament_dia, nozzle_dia, is_first_spiral
+                )
+            else:
+                self._write_layer(buf, layer, settings, filament_dia, nozzle_dia)
 
             # Fan kick-in
             if layer.layer_num == fan_kick_layer - 1 and settings.fan_speed > 0:
@@ -203,6 +219,97 @@ class GCodeGenerator:
             w("; TYPE:SUPPORT\n")
             for path in layer.support:
                 self._write_path(buf, path, settings, lh, filament_dia, infill_spd, retract)
+
+    # ------------------------------------------------------------------
+    # Internal: spiralize (non-stop / vase mode) layer writing
+    # ------------------------------------------------------------------
+
+    def _write_spiralize_layer(
+        self,
+        buf: io.StringIO,
+        layer,
+        next_z: float,
+        settings: SliceSettings,
+        filament_dia: float,
+        nozzle_dia: float,
+        is_first_spiral: bool
+    ):
+        """
+        スパイラル（ノンストップ/バース）モードのレイヤー出力。
+        外周1本のみを使い、Z を XY 移動と同時に線形補間しながら増加させる。
+        リトラクションなし、Z 単独移動なし。
+        """
+        w = buf.write
+        lh = settings.layer_height
+        feed_travel = int(settings.travel_speed * 60)
+        feed_print  = int(
+            getattr(settings, 'outer_perimeter_speed', settings.print_speed) * 60
+        )
+
+        w(f"\n; Layer {layer.layer_num + 1}  Z={layer.z:.4f} → {next_z:.4f}  [SPIRALIZE]\n")
+
+        # 最初のスパイラル層だけ Z 位置をセット
+        # (それ以降は前の層の連続スパイラルで Z がすでに正しい高さにある)
+        if is_first_spiral:
+            w(f"G1 Z{layer.z:.4f} F{feed_travel}\n")
+            self.current_z = layer.z
+
+        if not layer.perimeters:
+            return
+
+        # 外周パスのみ使用
+        outer = np.array(layer.perimeters[0], dtype=np.float64)
+        if outer.ndim != 2 or outer.shape[1] < 2 or len(outer) < 2:
+            return
+
+        # ループが閉じていなければ閉じる
+        if not np.allclose(outer[0], outer[-1], atol=1e-4):
+            outer = np.vstack([outer, outer[0]])
+
+        # 各セグメントの長さを計算
+        diffs    = np.diff(outer[:, :2], axis=0)
+        seg_lens = np.hypot(diffs[:, 0], diffs[:, 1])
+        total_len = float(np.sum(seg_lens))
+        if total_len < 1e-6:
+            return
+
+        # スパイラル Z 範囲
+        z_start = layer.z
+        dz      = next_z - z_start
+
+        # スタート地点へ XY トラベル（リトラクションなし）
+        start_x = float(outer[0, 0])
+        start_y = float(outer[0, 1])
+        travel_dist = math.hypot(start_x - self.current_x, start_y - self.current_y)
+        if travel_dist > 1e-3:
+            w(f"G1 X{start_x:.4f} Y{start_y:.4f} F{feed_travel}\n")
+            self.current_x = start_x
+            self.current_y = start_y
+
+        # 印刷フィードレート設定
+        if feed_print != self.current_f:
+            w(f"G1 F{feed_print}\n")
+            self.current_f = feed_print
+
+        # スパイラル押出し: 各点で Z を線形補間しながら同時に移動
+        cum_len = 0.0
+        for i, seg_len in enumerate(seg_lens):
+            if seg_len < 1e-6:
+                continue
+            cum_len += seg_len
+            x2 = float(outer[i + 1, 0])
+            y2 = float(outer[i + 1, 1])
+
+            t     = cum_len / total_len
+            z_now = z_start + dz * t
+
+            e_inc = self._calc_extrusion(seg_len, settings.line_width, lh, filament_dia)
+            self.e_total += e_inc
+
+            w(f"G1 X{x2:.4f} Y{y2:.4f} Z{z_now:.4f} E{self.e_total:.5f}\n")
+            self.current_x = x2
+            self.current_y = y2
+            self.current_z = z_now
 
     # ------------------------------------------------------------------
     # Internal: path writing

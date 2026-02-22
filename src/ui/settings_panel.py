@@ -256,6 +256,17 @@ class SettingsPanel(QWidget):
         lo2.addRow("", self.outer_before_inner_chk)
         vl.addWidget(gb2)
 
+        # Spiralize (Non-stop / Vase) mode
+        gb_sp, lo_sp = _group("Non-stop (Spiralize / Vase)")
+        self.spiralize_chk = QCheckBox("ノンストップ印刷モード（つなぎ目なし）")
+        self.spiralize_chk.setToolTip(
+            "各層の外周を連続螺旋状に印刷します。\n"
+            "Z上昇と横移動を同時に行うためつなぎ目がなくなります。\n"
+            "インフィル・トップ層は無視され、ベース層のみソリッドになります。"
+        )
+        lo_sp.addRow("", self.spiralize_chk)
+        vl.addWidget(gb_sp)
+
         # Infill
         gb3, lo3 = _group("Infill")
         row_inf, self.infill_slider, self.infill_val_lbl = _slider_row(0, 100, 20, "{} %")
@@ -504,6 +515,7 @@ class SettingsPanel(QWidget):
         self.infill_angle_spin.valueChanged.connect(self._emit)
         self.top_layers_spin.valueChanged.connect(self._emit)
         self.bottom_layers_spin.valueChanged.connect(self._emit)
+        self.spiralize_chk.toggled.connect(self._emit)
         self.brim_check.toggled.connect(self._on_brim_toggle)
         self.brim_width_spin.valueChanged.connect(self._emit)
 
@@ -819,6 +831,7 @@ class SettingsPanel(QWidget):
                     if idx >= 0: combo.setCurrentIndex(idx)
 
             # Print tab
+            sc(self.spiralize_chk,           'spiralize_mode')
             sv(self.layer_height_spin,       'layer_height')
             sv(self.first_layer_height_spin, 'first_layer_height')
             sv(self.wall_count_spin,         'wall_count')
@@ -899,6 +912,9 @@ class SettingsPanel(QWidget):
         s.first_layer_height = self.first_layer_height_spin.value()
         s.line_width_pct     = self.line_width_pct_spin.value()
         s.line_width         = s.nozzle_diameter * s.line_width_pct / 100.0
+
+        # Spiralize mode
+        s.spiralize_mode = self.spiralize_chk.isChecked()
 
         # Walls
         s.wall_count         = self.wall_count_spin.value()

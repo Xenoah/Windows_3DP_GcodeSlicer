@@ -93,6 +93,9 @@ class SliceSettings:
     fan_kick_in_layer: int = 2         # layer number to start fan
     min_layer_time: float = 5.0        # minimum seconds/layer (slow down if faster)
 
+    # ---- Spiralize / Non-stop (Vase) mode ----
+    spiralize_mode: bool = False   # Z+XY 同時移動でつなぎ目なし印刷
+
     # ---- Support ----
     support_enabled: bool = False
     support_threshold: float = 45.0    # overhang angle degrees
