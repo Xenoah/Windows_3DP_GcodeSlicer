@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QSizePolicy, QScrollArea, QFrame,
     QButtonGroup, QRadioButton, QInputDialog, QMessageBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 
 from src.core.slicer import SliceSettings
@@ -115,6 +115,12 @@ class SettingsPanel(QWidget):
         self._printer_profiles    = self._load_json('printers.json',  _default_printers())
         self._material_profiles   = self._load_json('materials.json', _default_materials())
         self._building            = False
+
+        # セッション自動保存タイマー（最後の変更から 600ms 後に保存）
+        self._session_timer = QTimer(self)
+        self._session_timer.setSingleShot(True)
+        self._session_timer.setInterval(600)
+        self._session_timer.timeout.connect(self._save_session)
 
         self._setup_ui()
         self._connect_signals()
@@ -575,6 +581,7 @@ class SettingsPanel(QWidget):
     def _emit(self, *_):
         if not self._building:
             self.settings_changed.emit(self.get_settings())
+            self._session_timer.start()  # デバウンス: 600ms 後に自動保存
 
     def _on_infill_slider(self, v):
         self.infill_val_lbl.setText(f"{v} %")
@@ -656,7 +663,7 @@ class SettingsPanel(QWidget):
             self.retraction_speed_spin.setValue(float(profile['default_retraction_speed']))
 
         self._building = False
-        self.settings_changed.emit(self.get_settings())
+        self._emit()  # settings_changed emit + セッション保存タイマー起動
 
     def _on_printer_settings(self):
         """Open the printer configuration dialog."""
@@ -973,6 +980,38 @@ class SettingsPanel(QWidget):
         s.fan_kick_in_layer      = self.fan_kick_layer_spin.value()
 
         return s
+
+    # -----------------------------------------------------------------------
+    # Session persistence (auto-save / restore)
+    # -----------------------------------------------------------------------
+
+    def _session_path(self) -> str:
+        """セッション保存ファイルのパス。"""
+        return os.path.join(self._profiles_dir, 'session.json')
+
+    def _save_session(self):
+        """現在の全設定を session.json へ保存する（タイマーから呼ばれる）。"""
+        try:
+            s = self.get_settings()
+            data = dataclasses.asdict(s)
+            data['_printer']  = self.printer_combo.currentText()
+            data['_material'] = self.material_combo.currentText()
+            with open(self._session_path(), 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[Settings] Session save failed: {e}")
+
+    def load_session(self):
+        """session.json から前回の設定を復元する（起動時に呼ぶ）。"""
+        path = self._session_path()
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            self._apply_preset_data(data)
+        except Exception as e:
+            print(f"[Settings] Session load failed: {e}")
 
     def get_printer_profile(self) -> dict:
         return self._printer_profiles.get(self.printer_combo.currentText(), {})

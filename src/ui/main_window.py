@@ -92,6 +92,9 @@ class MainWindow(QMainWindow):
         # Initial state
         self.status_label.setText("Ready - Open a model to start")
 
+        # 前回のセッション設定を復元
+        self.settings_panel.load_session()
+
     # ------------------------------------------------------------------
     # UI Setup
     # ------------------------------------------------------------------
@@ -335,6 +338,7 @@ class MainWindow(QMainWindow):
         self.model_list.currentRowChanged.connect(self._on_model_selected)
 
         # Settings panel
+        self.settings_panel.settings_changed.connect(self._on_settings_changed)
         self.settings_panel.slice_requested.connect(self._on_slice)
         self.settings_panel.export_requested.connect(self._on_export_gcode)
 
@@ -427,6 +431,15 @@ class MainWindow(QMainWindow):
         self._active_mesh_idx = row
         mesh = self._meshes[row]
         self.viewport.load_mesh(mesh.trimesh)
+
+    # ------------------------------------------------------------------
+    # Settings changed (printer / material / any param)
+    # ------------------------------------------------------------------
+
+    def _on_settings_changed(self, settings):
+        """プリンターや設定が変わったらビューポートの床サイズを更新する。"""
+        bed_x, bed_y = self.settings_panel.get_bed_size()
+        self.viewport.set_bed_size(bed_x, bed_y)
 
     # ------------------------------------------------------------------
     # Slicing

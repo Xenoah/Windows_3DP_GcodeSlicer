@@ -1,6 +1,9 @@
 {
   "Bambu Lab X1C": {
-    "bed_size": [256, 256],
+    "bed_size": [
+      256,
+      256
+    ],
     "bed_temp_max": 120,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
@@ -8,7 +11,10 @@
     "end_gcode": "M104 S0\nM140 S0\nG28 X0\nM84"
   },
   "Bambu Lab P1P": {
-    "bed_size": [256, 256],
+    "bed_size": [
+      256,
+      256
+    ],
     "bed_temp_max": 100,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
@@ -16,7 +22,10 @@
     "end_gcode": "M104 S0\nM140 S0\nG28 X0\nM84"
   },
   "Prusa MK4": {
-    "bed_size": [250, 210],
+    "bed_size": [
+      250,
+      210
+    ],
     "bed_temp_max": 110,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
@@ -24,7 +33,10 @@
     "end_gcode": "M104 S0\nM140 S0\nG91\nG1 E-1 F300\nG1 Z1\nG90\nM84"
   },
   "Creality Ender-3": {
-    "bed_size": [220, 220],
+    "bed_size": [
+      220,
+      220
+    ],
     "bed_temp_max": 110,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
@@ -32,7 +44,11 @@
     "end_gcode": "G91\nG1 E-5 F300\nG1 Z10 F3000\nG90\nG28 X0\nM84\nM104 S0\nM140 S0"
   },
   "Easythreed K9": {
-    "bed_size": [100, 100],
+    "bed_size": [
+      100,
+      100
+    ],
+    "bed_height": 100,
     "bed_temp_max": 0,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
@@ -45,7 +61,10 @@
     "end_gcode": "M104 S0\nM140 S0\nG28 X0 Y0\nM84\nM82\nM104 S0"
   },
   "Generic Printer": {
-    "bed_size": [200, 200],
+    "bed_size": [
+      200,
+      200
+    ],
     "bed_temp_max": 100,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
