@@ -4,6 +4,11 @@
     "bed_temp_max": 120,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
+    "max_print_speed": 500,
+    "default_print_speed": 200,
+    "default_layer_height": 0.2,
+    "default_retraction_distance": 1.0,
+    "default_retraction_speed": 45,
     "start_gcode": "G28\nG29\nG92 E0",
     "end_gcode": "M104 S0\nM140 S0\nG28 X0\nM84"
   },
@@ -12,6 +17,11 @@
     "bed_temp_max": 100,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
+    "max_print_speed": 500,
+    "default_print_speed": 200,
+    "default_layer_height": 0.2,
+    "default_retraction_distance": 1.0,
+    "default_retraction_speed": 45,
     "start_gcode": "G28\nG92 E0",
     "end_gcode": "M104 S0\nM140 S0\nG28 X0\nM84"
   },
@@ -20,6 +30,11 @@
     "bed_temp_max": 110,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
+    "max_print_speed": 300,
+    "default_print_speed": 60,
+    "default_layer_height": 0.2,
+    "default_retraction_distance": 2.0,
+    "default_retraction_speed": 45,
     "start_gcode": "G28\nG29\nG92 E0",
     "end_gcode": "M104 S0\nM140 S0\nG91\nG1 E-1 F300\nG1 Z1\nG90\nM84"
   },
@@ -28,6 +43,11 @@
     "bed_temp_max": 110,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
+    "max_print_speed": 150,
+    "default_print_speed": 50,
+    "default_layer_height": 0.2,
+    "default_retraction_distance": 5.0,
+    "default_retraction_speed": 45,
     "start_gcode": "G28\nG92 E0\nG1 Z2.0 F3000\nG1 X0.1 Y20 Z0.3 F5000\nG1 X0.1 Y150 E15 F1500\nG92 E0",
     "end_gcode": "G91\nG1 E-5 F300\nG1 Z10 F3000\nG90\nG28 X0\nM84\nM104 S0\nM140 S0"
   },
@@ -45,10 +65,15 @@
     "end_gcode": "M104 S0\nM140 S0\nG28 X0 Y0\nM84\nM82\nM104 S0"
   },
   "Generic Printer": {
-    "bed_size": [200, 200],
+    "bed_size": [220, 220],
     "bed_temp_max": 100,
     "nozzle_diameter": 0.4,
     "filament_diameter": 1.75,
+    "max_print_speed": 300,
+    "default_print_speed": 60,
+    "default_layer_height": 0.2,
+    "default_retraction_distance": 5.0,
+    "default_retraction_speed": 45,
     "start_gcode": "G28\nG92 E0",
     "end_gcode": "M104 S0\nM140 S0\nM84"
   }

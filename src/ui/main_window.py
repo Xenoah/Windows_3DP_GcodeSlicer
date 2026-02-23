@@ -343,6 +343,9 @@ class MainWindow(QMainWindow):
         self.settings_panel.slice_requested.connect(self._on_slice)
         self.settings_panel.export_requested.connect(self._on_export_gcode)
 
+        # View menu
+        self.action_toggle_grid.toggled.connect(self.viewport.set_show_grid)
+
         # Layer slider
         self.layer_slider.layer_changed.connect(self._on_layer_changed)
 

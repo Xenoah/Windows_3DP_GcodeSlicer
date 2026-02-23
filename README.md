@@ -395,6 +395,19 @@ Windows_3DP_GcodeSlicer/
 
 ## 変更履歴
 
+### 2026-02-23 (デバッグ・テスト)
+
+#### 修正
+- **「View → Toggle Grid」メニューが機能しないバグ修正**
+  - `action_toggle_grid` シグナルが `viewport.set_show_grid` に未接続だったため、クリックしても何も起きなかった問題を修正
+- **プリンタープロファイルに速度デフォルト値を追加**
+  - Bambu X1C/P1P・Prusa MK4・Ender-3 に `max_print_speed`・`default_print_speed`・`default_layer_height`・`default_retraction_distance/speed` を追加
+  - プリンター切替時に速度上限とデフォルト値が正しく反映されるよう修正
+- **Generic Printer のベッドサイズ修正**
+  - `200×200` → `220×220` mm（README 記載値と一致させた）
+- **SLICE NOW ボタンを起動時に無効化**
+  - モデルを読み込む前は SLICE NOW ボタンを無効（グレーアウト）にするよう修正
+
 ### 2026-02-23
 
 #### 追加

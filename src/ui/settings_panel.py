@@ -215,6 +215,7 @@ class SettingsPanel(QWidget):
 
         # ── Buttons ──────────────────────────────────────────────────────
         self.slice_btn = QPushButton("SLICE NOW")
+        self.slice_btn.setEnabled(False)
         self.slice_btn.setMinimumHeight(44)
         self.slice_btn.setFont(QFont("Arial", 13, QFont.Weight.Bold))
         self.slice_btn.setStyleSheet(
