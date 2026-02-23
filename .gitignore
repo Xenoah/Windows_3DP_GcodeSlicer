@@ -23,3 +23,17 @@ __pycache__/
 # OS
 Thumbs.db
 .DS_Store
+
+# Claude Code settings (ローカル専用)
+.claude/
+
+# 実行時生成ファイル
+profiles/session.json
+
+# G-code / 3D print output files
+*.gcode
+*.g
+*.nc
+
+# 大きいバイナリ / サンプルモデル (必要なら除外を外す)
+# sample/*.stl
