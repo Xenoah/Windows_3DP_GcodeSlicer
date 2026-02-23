@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -c:*)",
-      "Bash(timeout 8 python:*)",
-      "Bash(echo:*)"
-    ]
-  }
-}

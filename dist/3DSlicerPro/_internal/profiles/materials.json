@@ -1,7 +1,0 @@
-{
-  "PLA": {"print_temp": 210, "bed_temp": 60, "fan_speed": 100, "retraction": 5.0},
-  "PETG": {"print_temp": 235, "bed_temp": 80, "fan_speed": 50, "retraction": 6.0},
-  "ABS": {"print_temp": 240, "bed_temp": 100, "fan_speed": 0, "retraction": 5.0},
-  "TPU": {"print_temp": 225, "bed_temp": 60, "fan_speed": 50, "retraction": 1.0},
-  "ASA": {"print_temp": 245, "bed_temp": 100, "fan_speed": 20, "retraction": 5.0}
-}
