@@ -1,3 +1,9 @@
 @echo off
-call venv\Scripts\activate
-python main.py
+cd /d "%~dp0"
+
+:: venv があればその python を使う（activate 不要）
+if exist venv\Scripts\python.exe (
+    venv\Scripts\python.exe main.py
+) else (
+    python main.py
+)

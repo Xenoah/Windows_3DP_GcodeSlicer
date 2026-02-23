@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QColorDialog, QFileDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QColor
 
 from src.core.slicer import SliceSettings
 from src.ui.printer_dialog import PrinterSettingsDialog
@@ -162,6 +162,7 @@ class SettingsPanel(QWidget):
         self._session_timer.timeout.connect(self._save_session)
 
         self._setup_ui()
+        self._build_theme_dialog()   # theme widgets created here (not in a tab)
         self._connect_signals()
         # Apply initial printer defaults (suppresses spurious signals)
         self._on_printer_changed(self.printer_combo.currentText())
@@ -277,7 +278,6 @@ class SettingsPanel(QWidget):
         self.tabs.addTab(_scroll(self._tab_speed()),   "Speed")
         self.tabs.addTab(_scroll(self._tab_support()), "Support")
         self.tabs.addTab(_scroll(self._tab_tempfan()), "Temp/Fan")
-        self.tabs.addTab(_scroll(self._tab_help()),    "Help")
         root.addWidget(self.tabs, stretch=1)
 
         # ── Buttons ──────────────────────────────────────────────────────
@@ -571,21 +571,27 @@ class SettingsPanel(QWidget):
         return w
 
     # -----------------------------------------------------------------------
-    # Tab: Help (Appearance + License)
+    # Theme dialog (accessed via Setting > Theme… in the menu bar)
     # -----------------------------------------------------------------------
 
-    def _tab_help(self) -> QWidget:
-        w = QWidget()
-        vl = QVBoxLayout(w)
-        vl.setContentsMargins(4, 4, 4, 4)
-        vl.setSpacing(6)
+    def _build_theme_dialog(self):
+        """Create the persistent theme dialog and all theme widgets."""
+        from PyQt6.QtWidgets import QDialog
+        from PyQt6.QtCore import Qt as _Qt
 
-        # ── Appearance ────────────────────────────────────────────────────
-        gb1, lo1 = _group("Appearance", QVBoxLayout)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Theme Settings")
+        dlg.setMinimumWidth(300)
+        dlg.setWindowFlag(_Qt.WindowType.WindowContextHelpButtonHint, False)
 
+        lo = QVBoxLayout(dlg)
+        lo.setSpacing(8)
+        lo.setContentsMargins(10, 10, 10, 10)
+
+        # ── Theme combo ───────────────────────────────────────────────────
         theme_row = QHBoxLayout()
         theme_lbl = QLabel("Theme:")
-        theme_lbl.setFixedWidth(48)
+        theme_lbl.setFixedWidth(70)
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(THEME_NAMES)
         idx = self.theme_combo.findText(self._current_theme)
@@ -593,43 +599,41 @@ class SettingsPanel(QWidget):
             self.theme_combo.setCurrentIndex(idx)
         theme_row.addWidget(theme_lbl)
         theme_row.addWidget(self.theme_combo, stretch=1)
-        lo1.addLayout(theme_row)
+        lo.addLayout(theme_row)
 
-        # Custom color pickers (visible only when "Custom" selected)
+        # ── Custom color pickers (shown only when "Custom" selected) ──────
         self.custom_colors_widget = QWidget()
         cl = QFormLayout(self.custom_colors_widget)
-        cl.setContentsMargins(4, 4, 4, 0)
-        cl.setSpacing(4)
+        cl.setContentsMargins(0, 4, 0, 0)
+        cl.setSpacing(6)
 
         self.color_bg_btn     = QPushButton()
         self.color_text_btn   = QPushButton()
         self.color_accent_btn = QPushButton()
         for b in (self.color_bg_btn, self.color_text_btn, self.color_accent_btn):
-            b.setFixedHeight(22)
+            b.setFixedHeight(24)
 
         cl.addRow("Background:", self.color_bg_btn)
         cl.addRow("Text:",       self.color_text_btn)
         cl.addRow("Accent:",     self.color_accent_btn)
-        lo1.addWidget(self.custom_colors_widget)
+        lo.addWidget(self.custom_colors_widget)
         self.custom_colors_widget.setVisible(False)
 
-        # Populate swatch colors
         self._update_color_swatches()
 
-        vl.addWidget(gb1)
+        # ── Close button ──────────────────────────────────────────────────
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.hide)
+        lo.addStretch()
+        lo.addWidget(close_btn)
 
-        # ── MIT License ───────────────────────────────────────────────────
-        gb2, lo2 = _group("License (MIT)", QVBoxLayout)
-        license_edit = QTextEdit()
-        license_edit.setReadOnly(True)
-        license_edit.setPlainText(MIT_LICENSE_TEXT)
-        license_edit.setMaximumHeight(220)
-        license_edit.setFont(QFont("Courier New", 8))
-        lo2.addWidget(license_edit)
-        vl.addWidget(gb2)
+        self._theme_dlg = dlg
 
-        vl.addStretch()
-        return w
+    def show_theme_dialog(self):
+        """Show the theme dialog (called from main_window Setting menu)."""
+        self._theme_dlg.show()
+        self._theme_dlg.raise_()
+        self._theme_dlg.activateWindow()
 
     # -----------------------------------------------------------------------
     # Signal connections

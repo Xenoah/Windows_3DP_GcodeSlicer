@@ -673,7 +673,7 @@ class Viewport3D(QOpenGLWidget):
 
         if self._mouse_button == Qt.MouseButton.LeftButton:
             self._azimuth   += dx * 0.5
-            self._elevation  = max(-89.0, min(89.0, self._elevation - dy * 0.5))
+            self._elevation  = max(-89.0, min(89.0, self._elevation + dy * 0.5))
             self.update()
 
         elif self._mouse_button == Qt.MouseButton.MiddleButton:
@@ -684,7 +684,7 @@ class Viewport3D(QOpenGLWidget):
                                -math.sin(el)*math.cos(az),
                                 math.cos(el)], dtype=np.float32)
             scale = self._distance * 0.0012
-            self._target -= (right * dx - up * dy) * scale
+            self._target -= (-right * dx - up * dy) * scale
             self.update()
 
     def mouseReleaseEvent(self, event):

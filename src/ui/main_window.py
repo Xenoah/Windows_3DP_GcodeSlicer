@@ -217,10 +217,18 @@ class MainWindow(QMainWindow):
         self.action_toggle_grid.setChecked(True)
         view_menu.addAction(self.action_toggle_grid)
 
+        # Setting menu
+        setting_menu = menubar.addMenu("Setting")
+        self.action_theme = QAction("Theme…", self)
+        setting_menu.addAction(self.action_theme)
+
         # Help menu
         help_menu = menubar.addMenu("Help")
-        self.action_about = QAction("About", self)
+        self.action_about   = QAction("About", self)
+        self.action_license = QAction("License…", self)
         help_menu.addAction(self.action_about)
+        help_menu.addSeparator()
+        help_menu.addAction(self.action_license)
 
     def _setup_toolbar(self):
         toolbar = QToolBar("Main Toolbar")
@@ -331,7 +339,9 @@ class MainWindow(QMainWindow):
         self.action_export_gcode.triggered.connect(self._on_export_gcode)
         self.action_exit.triggered.connect(self.close)
         self.action_reset_cam.triggered.connect(self.viewport.reset_camera)
+        self.action_theme.triggered.connect(self.settings_panel.show_theme_dialog)
         self.action_about.triggered.connect(self._on_about)
+        self.action_license.triggered.connect(self._on_license)
 
         # Left panel
         self.add_btn.clicked.connect(self._on_open_file)
@@ -674,7 +684,29 @@ class MainWindow(QMainWindow):
             "Left drag: Orbit camera<br>"
             "Middle drag: Pan camera<br>"
             "Scroll wheel: Zoom</p>"
+            "<hr>"
+            "<p>Developed by <b>Xenoah</b><br>"
+            "Released under the MIT License.</p>"
         )
+
+    def _on_license(self):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton
+        from PyQt6.QtGui import QFont as _QFont
+        from src.ui.settings_panel import MIT_LICENSE_TEXT
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("License")
+        dlg.resize(520, 400)
+        lo = QVBoxLayout(dlg)
+        te = QTextEdit()
+        te.setReadOnly(True)
+        te.setPlainText(MIT_LICENSE_TEXT)
+        te.setFont(_QFont("Courier New", 9))
+        lo.addWidget(te)
+        btn = QPushButton("Close")
+        btn.clicked.connect(dlg.accept)
+        lo.addWidget(btn)
+        dlg.exec()
 
     # ------------------------------------------------------------------
     # Keyboard shortcuts
