@@ -9,7 +9,7 @@ import traceback
 from typing import List, Optional
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QListWidget, QListWidgetItem, QPushButton,
     QFileDialog, QStatusBar, QProgressBar, QLabel,
     QToolBar, QMenuBar, QMenu, QMessageBox, QGroupBox,
@@ -342,6 +342,7 @@ class MainWindow(QMainWindow):
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
         self.settings_panel.slice_requested.connect(self._on_slice)
         self.settings_panel.export_requested.connect(self._on_export_gcode)
+        self.settings_panel.theme_changed.connect(self._on_theme_changed)
 
         # View menu
         self.action_toggle_grid.toggled.connect(self.viewport.set_show_grid)
@@ -645,6 +646,16 @@ class MainWindow(QMainWindow):
 
     def _on_layer_changed(self, layer_idx: int):
         self.viewport.set_layer_preview(layer_idx)
+
+    # ------------------------------------------------------------------
+    # Theme changed
+    # ------------------------------------------------------------------
+
+    def _on_theme_changed(self, name: str, custom_colors: dict):
+        from src.ui.themes import apply_theme
+        app = QApplication.instance()
+        if app:
+            apply_theme(app, name, custom_colors)
 
     # ------------------------------------------------------------------
     # About dialog

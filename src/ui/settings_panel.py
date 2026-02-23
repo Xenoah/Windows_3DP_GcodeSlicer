@@ -23,13 +23,49 @@ from PyQt6.QtWidgets import (
     QLabel, QComboBox, QTabWidget, QGroupBox,
     QDoubleSpinBox, QSpinBox, QCheckBox, QSlider,
     QPushButton, QSizePolicy, QScrollArea, QFrame,
-    QButtonGroup, QRadioButton, QInputDialog, QMessageBox
+    QButtonGroup, QRadioButton, QInputDialog, QMessageBox,
+    QTextEdit, QColorDialog, QFileDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 
 from src.core.slicer import SliceSettings
 from src.ui.printer_dialog import PrinterSettingsDialog
+try:
+    from src.ui.themes import THEME_NAMES
+except ImportError:
+    THEME_NAMES = ["Dark", "Darker", "Ocean", "Solarized Dark", "Light", "High Contrast", "Custom"]
+
+
+MIT_LICENSE_TEXT = """\
+MIT License
+
+Copyright (c) 2024 3D Slicer Pro Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+
+_DEFAULT_CUSTOM_COLORS = {
+    'background': '#1e1e1e',
+    'text':       '#dcdcdc',
+    'accent':     '#2a82da',
+}
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +142,7 @@ class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(object)
     slice_requested  = pyqtSignal()
     export_requested = pyqtSignal()
+    theme_changed    = pyqtSignal(str, dict)   # (theme_name, custom_colors)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -115,6 +152,8 @@ class SettingsPanel(QWidget):
         self._printer_profiles    = self._load_json('printers.json',  _default_printers())
         self._material_profiles   = self._load_json('materials.json', _default_materials())
         self._building            = False
+        self._current_theme       = 'Dark'
+        self._custom_colors       = dict(_DEFAULT_CUSTOM_COLORS)
 
         # セッション自動保存タイマー（最後の変更から 600ms 後に保存）
         self._session_timer = QTimer(self)
@@ -140,11 +179,23 @@ class SettingsPanel(QWidget):
         return os.path.join(os.path.dirname(os.path.dirname(here)), 'profiles')
 
     def _load_json(self, filename: str, fallback: dict) -> dict:
+        # profiles/ ディレクトリがなければ作成（EXE 配布・初回起動時対策）
+        os.makedirs(self._profiles_dir, exist_ok=True)
         path = os.path.join(self._profiles_dir, filename)
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except Exception:
+        except FileNotFoundError:
+            # ファイルがなければデフォルト内容で新規作成
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(fallback, f, indent=2, ensure_ascii=False)
+                print(f"[Settings] Created default {filename}")
+            except Exception as e:
+                print(f"[Settings] Could not create {filename}: {e}")
+            return fallback
+        except Exception as e:
+            print(f"[Settings] Failed to load {filename}: {e}")
             return fallback
 
     # -----------------------------------------------------------------------
@@ -203,6 +254,21 @@ class SettingsPanel(QWidget):
         preset_lo.addLayout(pr_row2)
         root.addWidget(preset_gb)
 
+        # ── Settings tools ────────────────────────────────────────────────
+        tools_row = QHBoxLayout()
+        self.reset_btn           = QPushButton("↺ Reset")
+        self.import_settings_btn = QPushButton("Import…")
+        self.export_settings_btn = QPushButton("Export…")
+        for b in (self.reset_btn, self.import_settings_btn, self.export_settings_btn):
+            b.setFixedHeight(24)
+        self.reset_btn.setToolTip("Reset all settings to defaults (Generic Printer)")
+        self.import_settings_btn.setToolTip("Import settings from a JSON file")
+        self.export_settings_btn.setToolTip("Export current settings to a JSON file")
+        tools_row.addWidget(self.reset_btn)
+        tools_row.addWidget(self.import_settings_btn)
+        tools_row.addWidget(self.export_settings_btn)
+        root.addLayout(tools_row)
+
         # ── Tabs ─────────────────────────────────────────────────────────
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
@@ -211,6 +277,7 @@ class SettingsPanel(QWidget):
         self.tabs.addTab(_scroll(self._tab_speed()),   "Speed")
         self.tabs.addTab(_scroll(self._tab_support()), "Support")
         self.tabs.addTab(_scroll(self._tab_tempfan()), "Temp/Fan")
+        self.tabs.addTab(_scroll(self._tab_help()),    "Help")
         root.addWidget(self.tabs, stretch=1)
 
         # ── Buttons ──────────────────────────────────────────────────────
@@ -504,6 +571,67 @@ class SettingsPanel(QWidget):
         return w
 
     # -----------------------------------------------------------------------
+    # Tab: Help (Appearance + License)
+    # -----------------------------------------------------------------------
+
+    def _tab_help(self) -> QWidget:
+        w = QWidget()
+        vl = QVBoxLayout(w)
+        vl.setContentsMargins(4, 4, 4, 4)
+        vl.setSpacing(6)
+
+        # ── Appearance ────────────────────────────────────────────────────
+        gb1, lo1 = _group("Appearance", QVBoxLayout)
+
+        theme_row = QHBoxLayout()
+        theme_lbl = QLabel("Theme:")
+        theme_lbl.setFixedWidth(48)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(THEME_NAMES)
+        idx = self.theme_combo.findText(self._current_theme)
+        if idx >= 0:
+            self.theme_combo.setCurrentIndex(idx)
+        theme_row.addWidget(theme_lbl)
+        theme_row.addWidget(self.theme_combo, stretch=1)
+        lo1.addLayout(theme_row)
+
+        # Custom color pickers (visible only when "Custom" selected)
+        self.custom_colors_widget = QWidget()
+        cl = QFormLayout(self.custom_colors_widget)
+        cl.setContentsMargins(4, 4, 4, 0)
+        cl.setSpacing(4)
+
+        self.color_bg_btn     = QPushButton()
+        self.color_text_btn   = QPushButton()
+        self.color_accent_btn = QPushButton()
+        for b in (self.color_bg_btn, self.color_text_btn, self.color_accent_btn):
+            b.setFixedHeight(22)
+
+        cl.addRow("Background:", self.color_bg_btn)
+        cl.addRow("Text:",       self.color_text_btn)
+        cl.addRow("Accent:",     self.color_accent_btn)
+        lo1.addWidget(self.custom_colors_widget)
+        self.custom_colors_widget.setVisible(False)
+
+        # Populate swatch colors
+        self._update_color_swatches()
+
+        vl.addWidget(gb1)
+
+        # ── MIT License ───────────────────────────────────────────────────
+        gb2, lo2 = _group("License (MIT)", QVBoxLayout)
+        license_edit = QTextEdit()
+        license_edit.setReadOnly(True)
+        license_edit.setPlainText(MIT_LICENSE_TEXT)
+        license_edit.setMaximumHeight(220)
+        license_edit.setFont(QFont("Courier New", 8))
+        lo2.addWidget(license_edit)
+        vl.addWidget(gb2)
+
+        vl.addStretch()
+        return w
+
+    # -----------------------------------------------------------------------
     # Signal connections
     # -----------------------------------------------------------------------
 
@@ -566,10 +694,21 @@ class SettingsPanel(QWidget):
         self.fan_fl_slider.valueChanged.connect(self._on_fan_fl)
         self.fan_kick_layer_spin.valueChanged.connect(self._emit)
 
+        # Tools row (reset / import / export settings)
+        self.reset_btn.clicked.connect(self._on_reset)
+        self.import_settings_btn.clicked.connect(self._on_import_settings)
+        self.export_settings_btn.clicked.connect(self._on_export_settings)
+
         # Preset buttons
         self.preset_load_btn.clicked.connect(self._on_preset_load)
         self.preset_save_btn.clicked.connect(self._on_preset_save)
         self.preset_delete_btn.clicked.connect(self._on_preset_delete)
+
+        # Help tab – theme
+        self.theme_combo.currentTextChanged.connect(self._on_theme_combo_changed)
+        self.color_bg_btn.clicked.connect(lambda: self._pick_color('background'))
+        self.color_text_btn.clicked.connect(lambda: self._pick_color('text'))
+        self.color_accent_btn.clicked.connect(lambda: self._pick_color('accent'))
 
         # Buttons
         self.slice_btn.clicked.connect(self.slice_requested)
@@ -614,6 +753,99 @@ class SettingsPanel(QWidget):
     def _on_fan_fl(self, v):
         self.fan_fl_lbl.setText(f"{v} %")
         self._emit()
+
+    # -----------------------------------------------------------------------
+    # Reset / Import / Export settings
+    # -----------------------------------------------------------------------
+
+    def _on_reset(self):
+        """Reset all settings to defaults using Generic Printer."""
+        reply = QMessageBox.question(
+            self, "Reset Settings",
+            "Reset all settings to defaults?\n\nPrinter will be set to Generic Printer.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._apply_preset_data(self._get_default_data())
+        self._session_timer.start()
+
+    def _get_default_data(self) -> dict:
+        return {
+            '_printer': 'Generic Printer', '_material': 'PLA',
+            'layer_height': 0.2,   'first_layer_height': 0.3,
+            'wall_count': 3,       'outer_before_inner': False,
+            'spiralize_mode': False,
+            'infill_density': 20,  'infill_pattern': 'grid', 'infill_angle': 45.0,
+            'top_layers': 4,       'bottom_layers': 4,
+            'brim_enabled': False, 'brim_width': 8.0,
+            'line_width_pct': 100.0, 'seam_position': 'back',
+            'infill_overlap': 10.0, 'skin_overlap': 5.0,
+            'retraction_enabled': True,
+            'retraction_distance': 5.0,   'retraction_speed': 45.0,
+            'retraction_min_distance': 1.5, 'retraction_extra_prime': 0.0,
+            'retraction_z_hop': 0.0,
+            'outer_perimeter_speed': 40.0, 'print_speed': 60.0,
+            'top_bottom_speed': 40.0,      'infill_speed': 80.0,
+            'bridge_speed': 25.0,          'first_layer_speed': 25.0,
+            'travel_speed': 200.0,         'min_layer_time': 5.0,
+            'support_enabled': False,      'support_threshold': 45,
+            'support_pattern': 'lines',    'support_density': 15,
+            'support_z_distance': 0.2,     'support_xy_distance': 0.7,
+            'support_interface_enabled': True, 'support_interface_layers': 2,
+            'print_temp': 210, 'print_temp_first_layer': 215, 'bed_temp': 60,
+            'fan_speed': 100,  'fan_first_layer': 0,          'fan_kick_in_layer': 2,
+        }
+
+    def _on_import_settings(self):
+        """Import settings from a user-chosen JSON file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Settings", "",
+            "Settings files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            self._apply_preset_data(data)
+            # Restore theme if present
+            if '_theme' in data:
+                self._current_theme   = data['_theme']
+                self._custom_colors   = data.get('_custom_colors', dict(_DEFAULT_CUSTOM_COLORS))
+                idx = self.theme_combo.findText(self._current_theme)
+                if idx >= 0:
+                    self.theme_combo.blockSignals(True)
+                    self.theme_combo.setCurrentIndex(idx)
+                    self.theme_combo.blockSignals(False)
+                self.custom_colors_widget.setVisible(self._current_theme == 'Custom')
+                self._update_color_swatches()
+                self.theme_changed.emit(self._current_theme, self._custom_colors)
+            self._session_timer.start()
+        except Exception as e:
+            QMessageBox.warning(self, "Import Error", f"Failed to import settings:\n{e}")
+
+    def _on_export_settings(self):
+        """Export current settings to a user-chosen JSON file."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Settings", "settings.json",
+            "Settings files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            s    = self.get_settings()
+            data = dataclasses.asdict(s)
+            data['_printer']      = self.printer_combo.currentText()
+            data['_material']     = self.material_combo.currentText()
+            data['_theme']        = self._current_theme
+            data['_custom_colors'] = self._custom_colors
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            QMessageBox.information(self, "Exported",
+                                    f"Settings saved to:\n{path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Export Error", f"Failed to export settings:\n{e}")
 
     # -----------------------------------------------------------------------
     # Printer / Material changed
@@ -983,6 +1215,43 @@ class SettingsPanel(QWidget):
         return s
 
     # -----------------------------------------------------------------------
+    # Theme handling
+    # -----------------------------------------------------------------------
+
+    def _on_theme_combo_changed(self, name: str):
+        self._current_theme = name
+        self.custom_colors_widget.setVisible(name == 'Custom')
+        self.theme_changed.emit(name, self._custom_colors)
+        self._session_timer.start()
+
+    def _pick_color(self, key: str):
+        """Open a color picker and update the custom color for key."""
+        current = QColor(self._custom_colors.get(key, '#888888'))
+        color = QColorDialog.getColor(current, self, f"Pick {key} color")
+        if color.isValid():
+            self._custom_colors[key] = color.name()
+            self._update_color_swatches()
+            if self._current_theme == 'Custom':
+                self.theme_changed.emit('Custom', self._custom_colors)
+                self._session_timer.start()
+
+    def _update_color_swatches(self):
+        """Update button backgrounds to show chosen custom colors."""
+        def _swatch(btn, key):
+            col = self._custom_colors.get(key, '#888888')
+            c   = QColor(col)
+            lum = 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
+            txt = '#000000' if lum > 128 else '#ffffff'
+            btn.setText(col)
+            btn.setStyleSheet(
+                f"background-color:{col};color:{txt};border:1px solid #888;"
+                "border-radius:2px;"
+            )
+        _swatch(self.color_bg_btn,     'background')
+        _swatch(self.color_text_btn,   'text')
+        _swatch(self.color_accent_btn, 'accent')
+
+    # -----------------------------------------------------------------------
     # Session persistence (auto-save / restore)
     # -----------------------------------------------------------------------
 
@@ -995,8 +1264,10 @@ class SettingsPanel(QWidget):
         try:
             s = self.get_settings()
             data = dataclasses.asdict(s)
-            data['_printer']  = self.printer_combo.currentText()
-            data['_material'] = self.material_combo.currentText()
+            data['_printer']       = self.printer_combo.currentText()
+            data['_material']      = self.material_combo.currentText()
+            data['_theme']         = self._current_theme
+            data['_custom_colors'] = self._custom_colors
             with open(self._session_path(), 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
         except Exception as e:
@@ -1011,6 +1282,21 @@ class SettingsPanel(QWidget):
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             self._apply_preset_data(data)
+
+            # Restore theme
+            if '_theme' in data:
+                self._current_theme = data['_theme']
+                if '_custom_colors' in data:
+                    self._custom_colors = data['_custom_colors']
+                self._update_color_swatches()
+                self.theme_combo.blockSignals(True)
+                idx = self.theme_combo.findText(self._current_theme)
+                if idx >= 0:
+                    self.theme_combo.setCurrentIndex(idx)
+                self.theme_combo.blockSignals(False)
+                self.custom_colors_widget.setVisible(self._current_theme == 'Custom')
+                # Emit so main_window applies theme on startup
+                self.theme_changed.emit(self._current_theme, self._custom_colors)
         except Exception as e:
             print(f"[Settings] Session load failed: {e}")
 
@@ -1033,19 +1319,73 @@ class SettingsPanel(QWidget):
 # ---------------------------------------------------------------------------
 
 def _default_printers() -> dict:
+    """Full printer list – used as fallback AND to recreate printers.json if missing."""
     return {
+        'Bambu Lab X1C': {
+            'bed_size': [256, 256], 'bed_temp_max': 120,
+            'nozzle_diameter': 0.4, 'filament_diameter': 1.75,
+            'max_print_speed': 500, 'default_print_speed': 200,
+            'default_layer_height': 0.2,
+            'default_retraction_distance': 1.0, 'default_retraction_speed': 45,
+            'start_gcode': 'G28\nG29\nG92 E0',
+            'end_gcode': 'M104 S0\nM140 S0\nG28 X0\nM84',
+        },
+        'Bambu Lab P1P': {
+            'bed_size': [256, 256], 'bed_temp_max': 100,
+            'nozzle_diameter': 0.4, 'filament_diameter': 1.75,
+            'max_print_speed': 500, 'default_print_speed': 200,
+            'default_layer_height': 0.2,
+            'default_retraction_distance': 1.0, 'default_retraction_speed': 45,
+            'start_gcode': 'G28\nG92 E0',
+            'end_gcode': 'M104 S0\nM140 S0\nG28 X0\nM84',
+        },
+        'Prusa MK4': {
+            'bed_size': [250, 210], 'bed_temp_max': 110,
+            'nozzle_diameter': 0.4, 'filament_diameter': 1.75,
+            'max_print_speed': 300, 'default_print_speed': 60,
+            'default_layer_height': 0.2,
+            'default_retraction_distance': 2.0, 'default_retraction_speed': 45,
+            'start_gcode': 'G28\nG29\nG92 E0',
+            'end_gcode': 'M104 S0\nM140 S0\nG91\nG1 E-1 F300\nG1 Z1\nG90\nM84',
+        },
+        'Creality Ender-3': {
+            'bed_size': [220, 220], 'bed_temp_max': 110,
+            'nozzle_diameter': 0.4, 'filament_diameter': 1.75,
+            'max_print_speed': 150, 'default_print_speed': 50,
+            'default_layer_height': 0.2,
+            'default_retraction_distance': 5.0, 'default_retraction_speed': 45,
+            'start_gcode': 'G28\nG92 E0\nG1 Z2.0 F3000\nG1 X0.1 Y20 Z0.3 F5000\nG1 X0.1 Y150 E15 F1500\nG92 E0',
+            'end_gcode': 'G91\nG1 E-5 F300\nG1 Z10 F3000\nG90\nG28 X0\nM84\nM104 S0\nM140 S0',
+        },
+        'Easythreed K9': {
+            'bed_size': [100, 100], 'bed_temp_max': 0,
+            'nozzle_diameter': 0.4, 'filament_diameter': 1.75,
+            'max_print_speed': 40, 'default_print_speed': 30,
+            'default_layer_height': 0.3,
+            'default_retraction_distance': 6.5, 'default_retraction_speed': 25,
+            'start_gcode': 'T0\nM104 S{print_temp}\nM105\nM109 S{print_temp}\nM82\nG28\nG1 Z15.0 F6000\nG92 E0\nG1 F200 E3\nG92 E0\nG1 F1500 E-6.5',
+            'end_gcode': 'M104 S0\nM140 S0\nG28 X0 Y0\nM84\nM82\nM104 S0',
+        },
         'Generic Printer': {
             'bed_size': [220, 220], 'bed_temp_max': 100,
             'nozzle_diameter': 0.4, 'filament_diameter': 1.75,
+            'max_print_speed': 300, 'default_print_speed': 60,
+            'default_layer_height': 0.2,
+            'default_retraction_distance': 5.0, 'default_retraction_speed': 45,
             'start_gcode': 'G28\nG92 E0',
             'end_gcode': 'M104 S0\nM140 S0\nM84',
-        }
+        },
     }
 
 
 def _default_materials() -> dict:
+    """Full material list – used as fallback AND to recreate materials.json if missing."""
     return {
-        'PLA': {'print_temp': 210, 'bed_temp': 60, 'fan_speed': 100, 'retraction': 5.0}
+        'PLA':  {'print_temp': 210, 'bed_temp': 60,  'fan_speed': 100, 'retraction': 5.0},
+        'PETG': {'print_temp': 235, 'bed_temp': 80,  'fan_speed': 50,  'retraction': 6.0},
+        'ABS':  {'print_temp': 240, 'bed_temp': 100, 'fan_speed': 0,   'retraction': 5.0},
+        'TPU':  {'print_temp': 225, 'bed_temp': 60,  'fan_speed': 50,  'retraction': 1.0},
+        'ASA':  {'print_temp': 245, 'bed_temp': 100, 'fan_speed': 20,  'retraction': 5.0},
     }
 
 
