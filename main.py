@@ -1,5 +1,5 @@
 """
-3D Slicer Pro - Main entry point.
+Kasynel_Slicer - Main entry point.
 
 Creates QApplication with dark Fusion style and launches MainWindow.
 """
@@ -67,8 +67,8 @@ def main():
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("3D Slicer Pro")
-    app.setOrganizationName("SlicerPro")
+    app.setApplicationName("Kasynel_Slicer")
+    app.setOrganizationName("Xenoah")
     app.setApplicationVersion("1.0.0")
 
     _apply_initial_theme(app)

@@ -1,7 +1,8 @@
-# 3D Slicer Pro
+# Kasynel_Slicer
 
-Windows 向け FDM 3D プリンタースライサー。STL / OBJ / PLY などの3Dモデルを読み込み、Marlin / Klipper 対応の G-code を生成します。Claude Code で開発中。
+Windows 向け FDM 3D プリンタースライサー。STL / OBJ / PLY などの3Dモデルを読み込み、Marlin / Klipper 対応の G-code を生成します。
 
+![Version](https://img.shields.io/badge/Version-v1.0.0-orange)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyQt6](https://img.shields.io/badge/PyQt6-6.4%2B-green)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
@@ -76,7 +77,7 @@ python main.py
 
 ```bash
 build.bat
-# dist/3DSlicerPro/ にスタンドアロン EXE が生成される
+# dist/Kasynel_Slicer/ にスタンドアロン EXE が生成される
 ```
 
 ---
@@ -85,7 +86,7 @@ build.bat
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ File  View  Help          [Open] [Slice] [Export]    │  ← メニュー / ツールバー
+│ File  View  Setting  Help   [Open] [Slice] [Export]  │  ← メニュー / ツールバー
 ├──────────┬──────────────────────────┬────────────────┤
 │          │                          │ Machine        │
 │  Models  │                          │  Printer: ...  │
@@ -375,6 +376,7 @@ Windows_3DP_GcodeSlicer/
 │   │   ├── main_window.py      # メインウィンドウ
 │   │   ├── viewport.py         # OpenGL 3.3 ビューポート
 │   │   ├── settings_panel.py   # 設定パネル（5タブ）
+│   │   ├── themes.py           # カラーテーマシステム
 │   │   ├── printer_dialog.py   # プリンター設定ダイアログ
 │   │   └── layer_slider.py     # レイヤースライダー
 │   │
@@ -395,52 +397,65 @@ Windows_3DP_GcodeSlicer/
 
 ## 変更履歴
 
+### v1.0.0 (2026-02-24)
+
+#### ソフトウェア名称変更
+- **「3D Slicer Pro」→「Kasynel_Slicer」** に正式改名
+  - 北欧神話の Odin にちなんだ名称
+  - 全ソースファイル・G-code ヘッダー・UI 表記を統一
+
+#### 追加
+- **カラーテーマシステム** (`src/ui/themes.py`)
+  - プリセット 6種: Dark / Darker / Ocean / Solarized Dark / Light / High Contrast
+  - カスタムテーマ: 背景・テキスト・アクセントの3色を自由に設定
+  - Setting → Theme… メニューから設定、テーマはセッションに自動保存
+- **設定のリセット機能**
+  - 「↺ Reset」ボタンで全設定をデフォルト値に戻す（確認ダイアログあり）
+- **設定ファイルの Import / Export**
+  - 「Import…」「Export…」ボタンで設定を JSON ファイルとして保存・読込
+- **MITライセンス表示**
+  - Help → License… メニューからライセンス全文を確認可能
+- **About ダイアログに作者クレジット追加**
+  - Developed by Xenoah / Released under the MIT License.
+
+#### 修正
+- **カメラ操作の上下・左右反転修正**
+  - 左ドラッグ上下（仰角）の方向を反転
+  - 中ドラッグ（パン）の左右方向を反転
+- **PowerShell 実行ポリシーエラー修正**
+  - `run.bat` を `venv\Scripts\python.exe` 直接呼び出し方式に変更（Activate.ps1 不要）
+
+---
+
 ### 2026-02-23 (デバッグ・テスト)
 
 #### 修正
 - **「View → Toggle Grid」メニューが機能しないバグ修正**
-  - `action_toggle_grid` シグナルが `viewport.set_show_grid` に未接続だったため、クリックしても何も起きなかった問題を修正
 - **プリンタープロファイルに速度デフォルト値を追加**
-  - Bambu X1C/P1P・Prusa MK4・Ender-3 に `max_print_speed`・`default_print_speed`・`default_layer_height`・`default_retraction_distance/speed` を追加
-  - プリンター切替時に速度上限とデフォルト値が正しく反映されるよう修正
-- **Generic Printer のベッドサイズ修正**
-  - `200×200` → `220×220` mm（README 記載値と一致させた）
+- **Generic Printer のベッドサイズ修正** (`200×200` → `220×220` mm)
 - **SLICE NOW ボタンを起動時に無効化**
-  - モデルを読み込む前は SLICE NOW ボタンを無効（グレーアウト）にするよう修正
+
+---
 
 ### 2026-02-23
 
 #### 追加
 - **ノンストップ印刷モード（スパイラル/花瓶モード）**
-  - Z 上昇と横移動を同時に行う連続螺旋押出しを実装
-  - ベース層（Bottom layers 設定枚数）はソリッドで通常印刷後、外周のみ螺旋
-  - 設定タブ「Print」→「Non-stop (Spiralize / Vase)」チェックボックス
 - **セッション自動保存・復元**
-  - 設定変更から 600ms 後に `profiles/session.json` へ自動保存（デバウンス）
-  - 次回起動時にプリンター・マテリアル・全パラメータを自動復元
 - **設定変更でスライスデータを自動破棄**
-  - 設定が変わったら古いスライス結果をクリア（エクスポートボタン無効化）
 
 #### 修正
 - **プリンター変更時のベッドサイズ未反映バグ修正**
-  - `settings_changed` シグナルが MainWindow に未接続だったため、プリンター切替でグリッドが更新されなかった問題を修正
 - **造形サイズオーバーバグ修正**
-  - モデルロード後にプリンター変更した際、メッシュが古いベッドサイズの中心に留まったまま G-code が生成されていた問題を修正
-  - ベッドサイズ変化時に全メッシュを新しいベッドの中心に自動再配置
 - **2回目スライスでクラッシュするバグ修正**
-  - `QThread.deleteLater()` で C++ オブジェクトが破棄された後も Python 参照が残りクラッシュしていた問題を修正
-  - `_on_thread_done()` でスレッド終了後に参照を `None` にするよう変更
 - **動作の重さ改善**
-  - ベッドサイズが変化しない設定変更時は `set_bed_size()` → グリッド再構築をスキップ
 - **Git リポジトリの整理**
-  - `dist/` `build/` `__pycache__/` `.claude/` を git 追跡から解除
-  - `profiles/session.json`・`*.gcode`・`.claude/` を `.gitignore` に追加
 
 ---
 
 ## ライセンス
 
-MIT License
+MIT License — Copyright (c) 2026 Xenoah
 
 ---
 

@@ -68,11 +68,11 @@ class SlicerWorker(QObject):
 # ---------------------------------------------------------------------------
 
 class MainWindow(QMainWindow):
-    """Main application window for 3D Slicer Pro."""
+    """Main application window for Kasynel_Slicer."""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("3D Slicer Pro")
+        self.setWindowTitle("Kasynel_Slicer")
         self.resize(1400, 900)
 
         # State
@@ -674,8 +674,8 @@ class MainWindow(QMainWindow):
     def _on_about(self):
         QMessageBox.about(
             self,
-            "About 3D Slicer Pro",
-            "<h2>3D Slicer Pro</h2>"
+            "About Kasynel_Slicer",
+            "<h2>Kasynel_Slicer  v1.0.0</h2>"
             "<p>A production-quality 3D printer slicer application.</p>"
             "<p><b>Supported formats:</b> STL, OBJ, PLY, 3MF, FBX, STEP</p>"
             "<p><b>Output:</b> Marlin/Klipper compatible G-code</p>"

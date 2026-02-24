@@ -1,4 +1,4 @@
-"""Color theme system for 3D Slicer Pro.
+"""Color theme system for Kasynel_Slicer.
 
 Built-in palettes: Dark, Darker, Ocean, Solarized Dark, Light, High Contrast.
 Custom palette: derived from three user-chosen colors (background, text, accent).
