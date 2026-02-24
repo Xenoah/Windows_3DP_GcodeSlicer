@@ -9,6 +9,10 @@ Windows 向け FDM 3D プリンタースライサー。STL / OBJ / PLY などの
 
 ---
 
+<img width="1402" height="932" alt="Image" src="https://github.com/user-attachments/assets/c963bcc3-c60f-4f3c-bc9b-d8b1ff93bcd5" />
+
+<img width="1402" height="932" alt="Image" src="https://github.com/user-attachments/assets/5235867a-8327-45ee-8779-8844513d4f29" />
+
 ## 目次
 
 1. [動作環境](#動作環境)
@@ -123,11 +127,13 @@ build.bat
    - 右パネルのタブで各種パラメータを設定
    - 設定変更時は自動でスライス済みデータが破棄される（再スライスが必要）
    - 設定は自動保存される（次回起動時に復元）
+<img width="956" height="691" alt="Image" src="https://github.com/user-attachments/assets/59d4170b-bae7-4724-9851-02b41d177d83" />
 
 4. **スライス実行**
    - 「SLICE NOW」ボタン（バックグラウンドスレッドで実行）
    - 完了後、自動で「Layer Preview」ビューに切り替わる
    - 下部のスライダーでレイヤーを切り替えて確認
+   <img width="337" height="850" alt="Image" src="https://github.com/user-attachments/assets/9a750555-ab1f-4ef4-8ee2-084b3d87a2d6" />
 
 5. **G-code エクスポート**
    - 「Export G-code」ボタン または File → Export G-code
